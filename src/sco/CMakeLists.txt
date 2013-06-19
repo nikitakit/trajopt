@@ -13,9 +13,6 @@ set(SCO_SOURCE_FILES
 	num_diff.cpp
 )
 
-if (NOT APPLE)
-  set (HAVE_BPMPD TRUE)
-endif()
 
 
 if (HAVE_BPMPD)
