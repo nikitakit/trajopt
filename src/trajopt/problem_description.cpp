@@ -107,6 +107,7 @@ void BasicInfo::fromJson(const Json::Value& v) {
   childFromJson(v, robot, "robot", string(""));
   childFromJson(v, dofs_fixed, "dofs_fixed", IntVec());
   // TODO: optimization parameters, etc?
+  childFromJson(v, max_iter, "max_iter", 40);
 }
 
 
@@ -227,7 +228,7 @@ TrajOptResult::TrajOptResult(OptResults& opt, TrajOptProb& prob) :
 TrajOptResultPtr OptimizeProblem(TrajOptProbPtr prob, bool plot) {
   Configuration::SaverPtr saver = prob->GetRAD()->Save();
   BasicTrustRegionSQP opt(prob);
-  opt.max_iter_ = 40;
+  opt.max_iter_ = prob->GetOptMaxIter();
   opt.min_approx_improve_frac_ = .001;
   opt.improve_ratio_threshold_ = .2;
   opt.merit_error_coeff_ = 20;
@@ -274,6 +275,7 @@ TrajOptProbPtr ConstructProblem(const ProblemConstructionInfo& pci) {
   }
 
   prob->SetInitTraj(pci.init_info.data);
+  prob->SetOptMaxIter(bi.max_iter);
 
   return prob;
 

@@ -251,6 +251,12 @@ OptStatus BasicTrustRegionSQP::optimize() {
         results_.cost_vals = evaluateCosts(prob_->getCosts(), x_);
         assert(results_.n_func_evals == 0);
         ++results_.n_func_evals;
+
+        if (max_iter_ == 0) {
+          LOG_INFO("zero iteration limit, only did cost evaluation");
+          retval = OPT_SCO_ITERATION_LIMIT;
+          goto cleanup;
+        }
       }
 
       // DblVec new_cnt_viols = evaluateConstraintViols(constraints, x_);

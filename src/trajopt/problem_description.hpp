@@ -66,13 +66,20 @@ public:
 
   TrajPlotterPtr GetPlotter() {return m_trajplotter;}
 
+  void SetOptMaxIter(int i) {m_opt_max_iter = i;}
+  int GetOptMaxIter() {return m_opt_max_iter;}
+
   friend TrajOptProbPtr ConstructProblem(const ProblemConstructionInfo&);
 
 private:
   VarArray m_traj_vars;
   ConfigurationPtr m_rad;
   TrajArray m_init_traj;
+
   TrajPlotterPtr m_trajplotter;
+
+  int m_opt_max_iter;
+  typedef std::pair<string,string> StringPair;
 };
 
 void TRAJOPT_API SetupPlotting(TrajOptProb& prob, Optimizer& opt);
@@ -90,6 +97,7 @@ struct BasicInfo  {
   string manip;
   string robot; // optional
   IntVec dofs_fixed; // optional
+  int max_iter; // optional
   void fromJson(const Json::Value& v);
 };
 
