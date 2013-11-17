@@ -7,6 +7,8 @@
 #include "configuration_space.hpp"
 #include "macros.h"
 
+class btCollisionShape;
+
 namespace trajopt {
 
 enum CastCollisionType {
@@ -21,11 +23,14 @@ struct Collision {
   const OR::KinBody::Link* linkB;
   OR::Vector ptA, ptB, normalB2A; /* normal points from 2 to 1 */
   OR::Vector ptB1;
+  const btCollisionShape* shapeA;
+  const btCollisionShape* shapeB;
   double distance; /* pt1 = pt2 + normal*dist */
   float weight, time;
   CastCollisionType cctype;
   Collision(const KinBody::Link* linkA, const KinBody::Link* linkB, const OR::Vector& ptA, const OR::Vector& ptB, const OR::Vector& normalB2A, double distance, float weight=1, float time=0) :
     linkA(linkA), linkB(linkB), ptA(ptA), ptB(ptB), normalB2A(normalB2A), distance(distance), weight(weight), time(0), cctype(CCType_None) {}
+  Collision(float time): time(time) {}
 };
 TRAJOPT_API std::ostream& operator<<(std::ostream&, const Collision&);
 
@@ -47,7 +52,7 @@ public:
   virtual void LinksVsAll(const vector<KinBody::LinkPtr>& links, vector<Collision>& collisions, short filterMask)=0;
 
   /** check robot vs everything else. includes attached bodies */
-  void BodyVsAll(const KinBody& body, vector<Collision>& collisions, short filterMask=-1) {
+  virtual void BodyVsAll(const KinBody& body, vector<Collision>& collisions, short filterMask=-1) {
     LinksVsAll(body.GetLinks(), collisions, filterMask);
   }
   /** contacts of distance < (arg) will be returned */

@@ -263,6 +263,20 @@ struct CollisionCostInfo : public TermInfo, public MakesCost {
   DEFINE_CREATE(CollisionCostInfo)
 };
 
+struct DPCollisionCostInfo : public TermInfo, public MakesCost {
+  /// first_step and last_step are inclusive
+  int first_step, last_step;
+  /// coeffs.size() = num_timesteps
+  DblVec coeffs;
+  /// safety margin: contacts with distance < dist_pen are penalized
+  DblVec dist_pen;
+  bool continuous;
+  /// for continuous-time penalty, use swept-shape between timesteps t and t+gap (gap=1 by default)
+  int gap;
+  void fromJson(const Value& v);
+  void hatch(TrajOptProb& prob);
+  DEFINE_CREATE(DPCollisionCostInfo)
+};
 
 // TODO: unify with joint position constraint
 /**

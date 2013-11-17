@@ -49,6 +49,41 @@ public:
   short m_filterMask;
 };
 
+struct DPCollisionEvaluator : public CollisionEvaluator {
+public:
+  DPCollisionEvaluator(ConfigurationPtr rad, const VarArray& vars, bool continuous);
+  /**
+  @brief linearize all contact distances in terms of robot dofs
+  
+  Do a collision check between robot and environment.
+  For each contact generated, return a linearization of the signed distance function
+  */
+  virtual void CalcDistExpressions(const DblVec& x, vector<AffExpr>& exprs);
+  /**
+   * Same as CalcDistExpressions, but just the distances--not the expressions
+   */
+  virtual void CalcDists(const DblVec& x, DblVec& exprs);
+  virtual void CalcCollisions(const DblVec& x, vector<Collision>& collisions);
+  virtual VarVector GetVars() {
+	VarVector res;
+	for (int i=0; i<m_vars.rows(); i++) {
+	  for (int j=0; j<m_vars.cols(); j++) {
+		// res.insert(res.end(), m_vars.row(i).begin(), m_vars.row(i).end());
+		res.push_back(m_vars(i,j));
+	  }
+	}
+	return res;
+}
+
+  OR::EnvironmentBasePtr m_env;
+  CollisionCheckerPtr m_cc;
+  ConfigurationPtr m_rad;
+  VarArray m_vars;
+  Link2Int m_link2ind;
+  vector<OR::KinBody::LinkPtr> m_links;
+  short m_filterMask;
+};
+
 struct CastCollisionEvaluator : public CollisionEvaluator {
 public:
   CastCollisionEvaluator(ConfigurationPtr rad, const VarVector& vars0, const VarVector& vars1);
@@ -86,6 +121,21 @@ private:
   double m_dist_pen;
   double m_coeff;
 };
+
+class TRAJOPT_API DPCollisionCost : public Cost, public Plotter {
+public:
+  /* constructor for single timestep */
+  DPCollisionCost(double dist_pen, DblVec coeffs, ConfigurationPtr rad, const VarArray& vars, bool continuous);
+  virtual ConvexObjectivePtr convex(const vector<double>& x, Model* model);
+  virtual double value(const vector<double>&);
+  void Plot(const DblVec& x, OR::EnvironmentBase& env, std::vector<OR::GraphHandlePtr>& handles);
+private:
+  CollisionEvaluatorPtr m_calc;
+  double m_dist_pen;
+  double m_coeff;
+};
+
+
 class TRAJOPT_API CollisionConstraint : public IneqConstraint {
 public:
   /* constructor for single timestep */

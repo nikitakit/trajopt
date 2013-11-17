@@ -32,6 +32,7 @@ void RegisterMakers() {
   TermInfo::RegisterMaker("joint_pos", &JointPosCostInfo::create);
   TermInfo::RegisterMaker("joint_vel", &JointVelCostInfo::create);
   TermInfo::RegisterMaker("collision", &CollisionCostInfo::create);
+  TermInfo::RegisterMaker("dp_collision", &DPCollisionCostInfo::create);
 
   TermInfo::RegisterMaker("joint", &JointConstraintInfo::create);
   TermInfo::RegisterMaker("cart_vel", &CartVelCntInfo::create);
@@ -501,6 +502,39 @@ void CollisionCostInfo::hatch(TrajOptProb& prob) {
   }
 
 
+
+  CollisionCheckerPtr cc = CollisionChecker::GetOrCreate(*prob.GetEnv());
+  cc->SetContactDistance(*std::max_element(dist_pen.begin(), dist_pen.end()) + .04);
+}
+
+
+void DPCollisionCostInfo::fromJson(const Value& v) {
+  FAIL_IF_FALSE(v.isMember("params"));
+  const Value& params = v["params"];
+
+  int n_steps = gPCI->basic_info.n_steps;
+  childFromJson(params, continuous, "continuous", true);
+  childFromJson(params, first_step, "first_step", 0);
+  childFromJson(params, last_step, "last_step", n_steps-1);
+  childFromJson(params, gap, "gap", 1);
+  FAIL_IF_FALSE( gap >= 0 );
+  FAIL_IF_FALSE((first_step >= 0) && (first_step < n_steps));
+  FAIL_IF_FALSE((last_step >= first_step) && (last_step < n_steps));
+  childFromJson(params, coeffs, "coeffs");
+  int n_terms = last_step - first_step + 1;
+  if (coeffs.size() == 1) coeffs = DblVec(n_terms, coeffs[0]);
+  else if (coeffs.size() != n_terms) {
+    PRINT_AND_THROW (boost::format("wrong size: coeffs. expected %i got %i")%n_terms%coeffs.size());
+  }
+  childFromJson(params, dist_pen,"dist_pen");
+  if (dist_pen.size() == 1) dist_pen = DblVec(n_terms, dist_pen[0]);
+  else if (dist_pen.size() != n_terms) {
+    PRINT_AND_THROW(boost::format("wrong size: dist_pen. expected %i got %i")%n_terms%dist_pen.size());
+  }
+}
+void DPCollisionCostInfo::hatch(TrajOptProb& prob) {
+  prob.addCost(CostPtr(new DPCollisionCost(dist_pen[0], coeffs, prob.GetRAD(), prob.GetVars(), continuous)));
+  prob.getCosts().back()->setName( (boost::format("%s")%name).str() );
 
   CollisionCheckerPtr cc = CollisionChecker::GetOrCreate(*prob.GetEnv());
   cc->SetContactDistance(*std::max_element(dist_pen.begin(), dist_pen.end()) + .04);

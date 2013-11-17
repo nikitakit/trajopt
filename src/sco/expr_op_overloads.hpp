@@ -117,4 +117,30 @@ inline AffExpr operator-(const AffExpr& a) {
   return exprMult(a, -1);
 }
 
+///////////////
+  inline AffExpr& operator +=(AffExpr& a, double b) {
+    exprInc(a, b);
+    return a;
+  }
+  inline AffExpr& operator +=(AffExpr& a, const AffExpr& b) {
+    exprInc(a, b);
+    return a;
+  }
+  inline AffExpr& operator +=(AffExpr& a, const Var& b) {
+    exprInc(a, b);
+    return a;
+  }
+
+  inline AffExpr& operator -=(AffExpr& a, double b) {
+    exprDec(a, b);
+    return a;
+  }
+  inline AffExpr& operator -=(AffExpr& a, const AffExpr& b) {
+    exprDec(a, b);
+    return a;
+  }
+  inline AffExpr& operator -=(AffExpr& a, const Var& b) {
+    exprDec(a, b);
+    return a;
+  }
 }
