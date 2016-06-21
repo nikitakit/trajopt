@@ -24,7 +24,7 @@ public:
   static boost::shared_ptr<CollisionChecker> GetOrCreate(OR::EnvironmentBase& env);
 };
 
-}
+// }
 
 /**
 Approximate each link as a union of spheres
