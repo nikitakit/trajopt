@@ -45,34 +45,6 @@ const double footbottomdata[12] = {
 MatrixX3d footbottompoints = Map<const MatrixX3d>(footbottomdata, 4, 3);
 
 
-void PolygonToEquations(const MatrixX2d& pts, MatrixX2d& ab, VectorXd& c) {
-  // ax + by + c <= 0
-  // assume polygon is convex
-  ab.resize(pts.rows(),2);
-  c.resize(pts.rows());
-  Vector2d p0 = pts.row(0);
-
-  for (int i=0; i < pts.rows(); ++i) {
-    int i1 = (i+1) % pts.rows();
-    double x0 = pts(i,0),
-        y0 = pts(i,1),
-        x1 = pts(i1,0),
-        y1 = pts(i1,1);
-    ab(i,0) = -(y1 - y0);
-    ab(i,1) = x1 - x0;
-    ab.row(i).normalize();
-    c(i) = -ab.row(i).dot(pts.row(i));
-  }
-
-  Vector2d centroid = pts.colwise().mean();
-  if (ab.row(0) * centroid + c(0) >= 0) {
-    ab *= -1;
-    c *= -1;
-  }
-
-}
-
-
 ZMPConstraint::ZMPConstraint(RobotAndDOFPtr rad, const MatrixX2d& hullpts, const VarVector& vars) :
           m_rad(rad), m_vars(vars), m_pts(hullpts) {
 
@@ -218,14 +190,14 @@ struct FootHeightCalc : public VectorOfVector {
 };
 
 FootHeightConstraint::FootHeightConstraint(RobotAndDOFPtr rad, KinBody::LinkPtr link, double height, const VarVector& vars) :
-  ConstraintFromFunc(VectorOfVectorPtr(new FootHeightCalc(rad, link, height)), vars, INEQ,  "FootHeight") {
+  ConstraintFromFunc(VectorOfVectorPtr(new FootHeightCalc(rad, link, height)), vars, VectorXd::Ones(1), INEQ,  "FootHeight") {
 }
 
 
 extern ProblemConstructionInfo* gPCI;
 
 
-struct PECostInfo : public CostInfo {
+struct PECostInfo : public TermInfo, public MakesCost {
   double coeff;
   int timestep;
   void fromJson(const Value& v) {
@@ -237,14 +209,12 @@ struct PECostInfo : public CostInfo {
     FAIL_IF_FALSE((timestep >= 0) && (timestep < n_steps));
   }
   void hatch(TrajOptProb& prob) {
-    prob.addCost(CostPtr(new PECost(prob.GetRAD(), prob.GetVarRow(timestep), coeff)));
+    prob.addCost(CostPtr(new PECost(boost::dynamic_pointer_cast<RobotAndDOF>(prob.GetRAD()), prob.GetVarRow(timestep), coeff)));
     prob.getCosts().back()->setName(name);
   }
-  static CostInfoPtr create() {
-    return CostInfoPtr(new PECostInfo());
-  }
+  DEFINE_CREATE(PECostInfo)
 };
-struct StaticTorqueCostCostInfo : public CostInfo {
+struct StaticTorqueCostInfo : public TermInfo, public MakesCost {
   double coeff;
   int timestep;
   void fromJson(const Value& v) {
@@ -256,12 +226,10 @@ struct StaticTorqueCostCostInfo : public CostInfo {
     FAIL_IF_FALSE((timestep >= 0) && (timestep < n_steps));
   }
   void hatch(TrajOptProb& prob) {
-    prob.addCost(CostPtr(new StaticTorqueCost(prob.GetRAD(), prob.GetVarRow(timestep), coeff)));
+    prob.addCost(CostPtr(new StaticTorqueCost(boost::dynamic_pointer_cast<RobotAndDOF>(prob.GetRAD()), prob.GetVarRow(timestep), coeff)));
     prob.getCosts().back()->setName(name);    
   }
-  static CostInfoPtr create() {
-    return CostInfoPtr(new StaticTorqueCostCostInfo());
-  }
+  DEFINE_CREATE(StaticTorqueCostInfo)
 };
 
 template <typename MatrixT>
@@ -288,7 +256,7 @@ MatrixX2d GetFeetPoly(const vector<KinBody::LinkPtr>& links) {
 }
 
 
-struct ZMPConstraintCntInfo : public CntInfo {
+struct ZMPConstraintInfo : public TermInfo, public MakesConstraint{
   int timestep;
   vector<string> planted_link_names;
   void fromJson(const Value& v) {
@@ -301,22 +269,21 @@ struct ZMPConstraintCntInfo : public CntInfo {
   }
   void hatch(TrajOptProb& prob) {
     vector<KinBody::LinkPtr> planted_links;
+    RobotAndDOFPtr rad = boost::dynamic_pointer_cast<RobotAndDOF>(prob.GetRAD());
     BOOST_FOREACH(const string& linkname, planted_link_names) {
-      KinBody::LinkPtr link = prob.GetRAD()->GetRobot()->GetLink(linkname);
+      KinBody::LinkPtr link = rad->GetRobot()->GetLink(linkname);
       if (!link) {
         PRINT_AND_THROW(boost::format("invalid link name: %s")%linkname);
       }
       planted_links.push_back(link);
     }
-    prob.addConstr(ConstraintPtr(new ZMPConstraint(prob.GetRAD(), GetFeetPoly(planted_links), prob.GetVarRow(timestep))));
+    prob.addConstraint(ConstraintPtr(new ZMPConstraint(rad, GetFeetPoly(planted_links), prob.GetVarRow(timestep))));
     prob.getIneqConstraints().back()->setName(name);    
   }
-  static CntInfoPtr create() {
-    return CntInfoPtr(new ZMPConstraintCntInfo());
-  }
+  DEFINE_CREATE(ZMPConstraintInfo)
 };
 
-struct FootHeightCntInfo : public CntInfo {
+struct FootHeightCntInfo : public TermInfo, public MakesConstraint {
   int timestep;
   double height;
   string link_name;
@@ -330,25 +297,24 @@ struct FootHeightCntInfo : public CntInfo {
     childFromJson(params, link_name, "link");
   }
   void hatch(TrajOptProb& prob) {
-    KinBody::LinkPtr link = prob.GetRAD()->GetRobot()->GetLink(link_name);
+    RobotAndDOFPtr rad = boost::dynamic_pointer_cast<RobotAndDOF>(prob.GetRAD());    
+    KinBody::LinkPtr link = rad->GetRobot()->GetLink(link_name);
     if (!link) {
       PRINT_AND_THROW(boost::format("invalid link name: %s")%link_name);
     }
-    prob.addConstr(ConstraintPtr(new FootHeightConstraint(prob.GetRAD(), link, height, prob.GetVarRow(timestep))));
+    prob.addConstraint(ConstraintPtr(new FootHeightConstraint(rad, link, height, prob.GetVarRow(timestep))));
     prob.getIneqConstraints().back()->setName(name);    
   }
-  static CntInfoPtr create() {
-    return CntInfoPtr(new FootHeightCntInfo());
-  }
+  DEFINE_CREATE(FootHeightCntInfo)
 };
 
 
 
 TRAJOPT_API void RegisterHumanoidCostsAndCnts() {
-  CostInfo::RegisterMaker("potential_energy", &PECostInfo::create);
-  CostInfo::RegisterMaker("static_torque", &StaticTorqueCostCostInfo::create);
-  CntInfo::RegisterMaker("zmp", &ZMPConstraintCntInfo::create);
-  CntInfo::RegisterMaker("foot_height", &FootHeightCntInfo::create);
+  TermInfo::RegisterMaker("potential_energy", &PECostInfo::create);
+  TermInfo::RegisterMaker("static_torque", &StaticTorqueCostInfo::create);
+  TermInfo::RegisterMaker("zmp", &ZMPConstraintInfo::create);
+  TermInfo::RegisterMaker("foot_height", &FootHeightCntInfo::create);
 }
 
 

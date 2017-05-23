@@ -13,12 +13,14 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/surface/convex_hull.h>
+#include <pcl/surface/concave_hull.h>
 #include "pcl/impl/instantiate.hpp"
 #include <boost/filesystem.hpp>
-#if 0
+#include <pcl/features/integral_image_normal.h>
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
 #include <pcl/filters/median_filter.h>
-#endif
 #include <pcl/filters/fast_bilateral.h>
+#endif
 
 using namespace std;
 using namespace pcl;
@@ -41,10 +43,18 @@ void setWidthToSize(const CloudT& cloud) {
 
 template <class T>
 typename pcl::PointCloud<T>::Ptr readPCD(const std::string& pcdfile) {
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
+  pcl::PCLPointCloud2 cloud_blob;
+#else
   sensor_msgs::PointCloud2 cloud_blob;
+#endif
   typename pcl::PointCloud<T>::Ptr cloud (new typename pcl::PointCloud<T>);
   if (pcl::io::loadPCDFile (pcdfile, cloud_blob) != 0) FILE_OPEN_ERROR(pcdfile);
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
+  pcl::fromPCLPointCloud2 (cloud_blob, *cloud);
+#else
   pcl::fromROSMsg (cloud_blob, *cloud);
+#endif
   return cloud;
 }
 
@@ -52,7 +62,7 @@ template<class T>
 void saveCloud(const typename pcl::PointCloud<T>& cloud, const std::string& fname) {
   std::string ext = fs::extension(fname);
   if (ext == ".pcd")   pcl::io::savePCDFileBinary(fname, cloud);
-  else if (ext == ".ply") pcl::io::savePLYFile(fname, cloud, true);
+  else if (ext == ".ply") PRINT_AND_THROW("not implemented");//pcl::io::savePLYFile(fname, cloud, true);
   else throw std::runtime_error( (boost::format("%s has unrecognized extension")%fname).str() );
 }
 
@@ -68,14 +78,47 @@ typename pcl::PointCloud<T>::Ptr downsampleCloud(typename pcl::PointCloud<T>::Co
   return out;
 }
 
+vector<int> getNearestNeighborIndices(PointCloud<PointXYZ>::Ptr src, PointCloud<PointXYZ>::Ptr targ) {
+  pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr tree (new pcl::KdTreeFLANN<pcl::PointXYZ>(true));
+  tree->setEpsilon(0);
+  tree->setInputCloud (targ);
+  vector<int> out;
+  out.reserve(src->size());
+
+  vector<int> neighb_inds(1);
+  vector<float> sqdists(1);
+  int k_neighbs=1;
+  BOOST_FOREACH(const PointXYZ& pt, src->points) {
+     int n_neighbs = tree->nearestKSearch(pt, k_neighbs, neighb_inds, sqdists);
+     FAIL_IF_FALSE(n_neighbs > 0);
+     out.push_back(neighb_inds[0]);    
+  }
+  return out;
+}
+
 //////////////////////////
 
 
-void findConvexHull(PointCloud<pcl::PointXYZ>::ConstPtr in, pcl::PointCloud<pcl::PointXYZ>& out, std::vector<Vertices>& polygons) {
+
+
+PointCloud<pcl::PointXYZ>::Ptr computeConvexHull(PointCloud<pcl::PointXYZ>::ConstPtr in, std::vector<Vertices>* polygons) {
+  pcl::PointCloud<pcl::PointXYZ>::Ptr out(new PointCloud<PointXYZ>()); 
   pcl::ConvexHull<PointXYZ> chull;
   chull.setInputCloud (in);
-  chull.reconstruct (out, polygons);
+  if (polygons != NULL) chull.reconstruct (*out, *polygons);
+  else chull.reconstruct(*out);
+  return out;
 }
+PointCloud<pcl::PointXYZ>::Ptr computeAlphaShape(pcl::PointCloud<pcl::PointXYZ>::ConstPtr in, float alpha, int dim, std::vector<pcl::Vertices>* polygons) {
+  pcl::PointCloud<pcl::PointXYZ>::Ptr out(new PointCloud<PointXYZ>()); 
+  pcl::ConcaveHull<PointXYZ> chull;
+  chull.setInputCloud (in);
+  chull.setDimension(dim);
+  if (polygons != NULL) chull.reconstruct (*out, *polygons);
+  else chull.reconstruct(*out);
+  return out;
+}
+
 
 PointCloud<pcl::PointNormal>::Ptr mlsAddNormals(PointCloud<pcl::PointXYZ>::ConstPtr in, float searchRadius) {
   pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals (new pcl::PointCloud<pcl::PointNormal>);
@@ -91,6 +134,20 @@ PointCloud<pcl::PointNormal>::Ptr mlsAddNormals(PointCloud<pcl::PointXYZ>::Const
   mls.setSearchRadius (0.04);
   mls.process (*cloud_with_normals);
   return cloud_with_normals;
+}
+
+
+PointCloud<pcl::Normal>::Ptr integralNormalEstimation(PointCloud<pcl::PointXYZ>::ConstPtr in, float maxDepthChangeFactor, float normalSmoothingSize) {
+  pcl::PointCloud<pcl::Normal>::Ptr normals (new pcl::PointCloud<pcl::Normal>);
+
+  pcl::IntegralImageNormalEstimation<pcl::PointXYZ, pcl::Normal> ne;
+  ne.setNormalEstimationMethod (ne.AVERAGE_3D_GRADIENT);
+  ne.setMaxDepthChangeFactor(maxDepthChangeFactor);
+  ne.setNormalSmoothingSize(normalSmoothingSize);
+  
+  ne.setInputCloud(in);
+  ne.compute(*normals);
+  return normals;
 }
 #if 0
 pcl::PolygonMesh::Ptr createMesh_MarchingCubes(PointCloud<pcl::PointNormal>::ConstPtr cloud_with_normals) {
@@ -145,7 +202,11 @@ pcl::PolygonMesh::Ptr meshOFM(PointCloud<pcl::PointXYZ>::ConstPtr cloud, int edg
   ofm.setTriangulationType (pcl::OrganizedFastMesh<PointXYZ>::TRIANGLE_ADAPTIVE_CUT);
   pcl::PolygonMeshPtr mesh(new pcl::PolygonMesh());
   ofm.reconstruct(mesh->polygons);
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
+  pcl::toPCLPointCloud2(*cloud, mesh->cloud);
+#else
   pcl::toROSMsg(*cloud, mesh->cloud);
+#endif
   mesh->header = cloud->header;
   return mesh;
 }
@@ -238,7 +299,7 @@ typename pcl::PointCloud<T>::Ptr maskFilter(typename pcl::PointCloud<T>::ConstPt
 
 template <class T>
 typename pcl::PointCloud<T>::Ptr medianFilter(typename pcl::PointCloud<T>::ConstPtr in, int windowSize, float maxAllowedMovement) {
-#if 0
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
   pcl::MedianFilter<T> mf;
   mf.setWindowSize(windowSize);
   mf.setMaxAllowedMovement(maxAllowedMovement);
@@ -246,12 +307,14 @@ typename pcl::PointCloud<T>::Ptr medianFilter(typename pcl::PointCloud<T>::Const
   mf.setInputCloud(in);
   mf.filter(*out);
   return out;
-#else PRINT_AND_THROW("not implemented");
+#else 
+  PRINT_AND_THROW("not implemented");
 #endif
 }
 
 template <class T>
 typename pcl::PointCloud<T>::Ptr fastBilateralFilter(typename pcl::PointCloud<T>::ConstPtr in, float sigmaS, float sigmaR) {
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
   pcl::FastBilateralFilter<T> mf;
   mf.setSigmaS(sigmaS);
   mf.setSigmaR(sigmaR);
@@ -259,10 +322,18 @@ typename pcl::PointCloud<T>::Ptr fastBilateralFilter(typename pcl::PointCloud<T>
   mf.setInputCloud(in);
   mf.applyFilter(*out);
   return out;
+#else
+  PRINT_AND_THROW("not implemented");
+#endif
 }
 
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
+void removenans(pcl::PCLPointCloud2& cloud, float fillval=0);
+void removenans(pcl::PCLPointCloud2& cloud, float fillval) {
+#else
 void removenans(sensor_msgs::PointCloud2& cloud, float fillval=0);
 void removenans(sensor_msgs::PointCloud2& cloud, float fillval) {
+#endif
   int npts = cloud.width * cloud.height;
   for (int i=0; i < npts; ++i) {
     float* ptdata = (float*)(cloud.data.data() + cloud.point_step * i);
@@ -279,13 +350,14 @@ void saveMesh(const pcl::PolygonMesh& origmesh, const std::string& fname) {
   string ext = fs::extension(fname);
   int errcode;
   if (ext == ".ply") {
-    errcode = pcl::io::savePLYFileBinary (fname, mesh);
+//    errcode = pcl::io::savePLYFileBinary (fname, mesh);
+    PRINT_AND_THROW("not implemented");
   }
   else if (ext == ".obj") {
-    bool success = pcl::io::saveOBJFile (fname, mesh);
+    errcode = pcl::io::saveOBJFile (fname, mesh);
   }
   else if (ext == ".vtk") {
-    bool success = pcl::io::saveVTKFile (fname, mesh);
+    errcode = pcl::io::saveVTKFile (fname, mesh);
   }
   else PRINT_AND_THROW(boost::format("filename %s had unrecognized extension")%fname);
   if (errcode) PRINT_AND_THROW(boost::format("saving mesh to file %s failed")%fname);

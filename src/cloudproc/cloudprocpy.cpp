@@ -7,10 +7,14 @@
 #include "utils/stl_to_string.hpp"
  #include "cloudgrabber.hpp"
 #include "cloudproc/mesh_simplification.hpp"
-#include <pcl/ros/conversions.h>
 #include <pcl/point_types.h>
 #include <boost/format.hpp>
 #include "hacd_interface.hpp"
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
+#include <pcl/conversions.h>
+#else
+#include <pcl/ros/conversions.h>
+#endif
 
 using namespace Eigen;
 using namespace pcl;
@@ -29,7 +33,8 @@ struct type_traits {
 };
 template<> const char* type_traits<float>::npname = "float32";
 template<> const char* type_traits<int>::npname = "int32";
-
+template<> const char* type_traits<uint8_t>::npname = "uint8";
+template<> const char* type_traits<uint16_t>::npname = "uint16";
 
 template <typename T>
 T* getPointer(const py::object& arr) {
@@ -48,15 +53,15 @@ py::object toNdarray1(const T* data, size_t dim0) {
 template<typename T>
 py::object toNdarray2(const T* data, size_t dim0, size_t dim1) {
   py::object out = np_mod.attr("empty")(py::make_tuple(dim0, dim1), type_traits<T>::npname);
-  float* pout = getPointer<float>(out);
-  memcpy(pout, data, dim0*dim1*sizeof(float));
+  T* pout = getPointer<T>(out);
+  memcpy(pout, data, dim0*dim1*sizeof(T));
   return out;
 }
 template<typename T>
 py::object toNdarray3(const T* data, size_t dim0, size_t dim1, size_t dim2) {
   py::object out = np_mod.attr("empty")(py::make_tuple(dim0, dim1, dim2), type_traits<T>::npname);
-  float* pout = getPointer<float>(out);
-  memcpy(pout, data, dim0*dim1*dim2*sizeof(float));
+  T* pout = getPointer<T>(out);
+  memcpy(pout, data, dim0*dim1*dim2*sizeof(T));
   return out;
 }
 template <class T>
@@ -99,7 +104,11 @@ struct PyCloud {
 
 CloudXYZ::Ptr PolygonMesh_getCloud(const PolygonMesh* mesh) {
   CloudXYZ::Ptr cloud(new CloudXYZ());
+#if PCL_VERSION_COMPARE(>=, 1, 7, 0)
+  pcl::fromPCLPointCloud2(mesh->cloud, *cloud);
+#else
   pcl::fromROSMsg(mesh->cloud, *cloud);
+#endif
   return cloud;
 }
 py::object PolygonMesh_getVertices(const PolygonMesh* mesh) {
@@ -142,7 +151,7 @@ void boost_register_cloud_type(const string& pyname) {
     .def("from3dArray", &PyCloudT::from3dArray)
     .def("save", &PyCloudT::save)
     ;
-  py::implicitly_convertible< boost::shared_ptr<CloudXYZ>, boost::shared_ptr<CloudXYZ const> >();
+  py::implicitly_convertible< boost::shared_ptr<PointCloudT>, boost::shared_ptr<PointCloudT const> >();
 }
 
 py::object pyConvexDecompHACD(const PolygonMesh& mesh, float concavity) {
@@ -163,6 +172,25 @@ PointCloud<PointXYZ>::Ptr pyMaskFilter(PointCloud<PointXYZ>::Ptr cloud, py::obje
   return maskFilter<PointXYZ>(cloud, mask, keep_organized);
 }
 
+PointCloud<PointXYZ>::Ptr pyComputeConvexHull(PointCloud<PointXYZ>::Ptr cloud, float alpha, int dim) {
+  return computeConvexHull(cloud, NULL);
+}
+PointCloud<PointXYZ>::Ptr pyComputeAlphaShape(PointCloud<PointXYZ>::Ptr cloud, float alpha, int dim) {
+  return computeAlphaShape(cloud, alpha, dim, NULL);
+}
+
+
+py::object pyGetNearestNeighborIndices(PointCloud<PointXYZ>::Ptr src, PointCloud<PointXYZ>::Ptr targ) {
+  vector<int> inds = getNearestNeighborIndices(src, targ);
+  return toNdarray1<int>(inds.data(), inds.size());
+}
+
+py::object pyGetRGBD(CloudGrabber* grabber) {
+  RGBD::Ptr rgbd = grabber->getRGBD();
+  py::object np_rgb = toNdarray3<uint8_t>(rgbd->rgb.data(), 480, 640, 3);
+  py::object np_depth = toNdarray2<uint16_t>(rgbd->depth.data(), 480, 640);
+  return py::make_tuple(np_rgb, np_depth);
+}
 
 BOOST_PYTHON_MODULE(cloudprocpy) {
 
@@ -173,8 +201,10 @@ BOOST_PYTHON_MODULE(cloudprocpy) {
   boost_register_cloud_type<PointXYZ>("CloudXYZ");
   boost_register_cloud_type<PointXYZRGB>("CloudXYZRGB");
   boost_register_cloud_type<PointNormal>("CloudXYZN");
+  boost_register_cloud_type<Normal>("CloudN");
 
   py::def("readPCDXYZ", &readPCD<PointXYZ>);
+  py::def("readPCDXYZRGB", &readPCD<PointXYZRGB>);
   py::def("downsampleCloud", &downsampleCloud<PointXYZ>);
   py::def("boxFilter", &boxFilter<PointXYZ>);
   py::def("boxFilterNegative", &boxFilterNegative<PointXYZ>);
@@ -190,9 +220,13 @@ BOOST_PYTHON_MODULE(cloudprocpy) {
       .def("save", &PolygonMesh_save, "Available formats: ply, obj, vtk")
       ;
 
+  py::def("computeConvexHull", &pyComputeConvexHull, (py::arg("cloud")));
+  py::def("computeAlphaShape", &pyComputeAlphaShape, (py::arg("cloud"), py::arg("alpha"), py::arg("dim")));
+  py::def("getNearestNeighborIndices", &pyGetNearestNeighborIndices, (py::arg("src_cloud"),py::arg("targ_cloud")));
   py::def("meshGP3", &meshGP3, (py::arg("cloud"), py::arg("search_radius")));
   py::def("meshOFM", &meshOFM, (py::arg("cloud"), py::arg("sigma_s")=15, py::arg("sigma_r") = .05));
   py::def("mlsAddNormals", &mlsAddNormals, (py::arg("cloud"), py::arg("search_radius")));
+  py::def("integralNormalEstimation", &integralNormalEstimation, (py::arg("cloud"), py::arg("maxDepthChangeFactor")=.02, py::arg("normalSmoothingSize")=10.0));
   py::def("loadMesh", &loadMesh, (py::arg("filename")));
   py::def("quadricSimplifyVTK", &quadricSimplifyVTK, (py::arg("cloud"), py::arg("decimation_frac")));
 
@@ -201,6 +235,8 @@ BOOST_PYTHON_MODULE(cloudprocpy) {
       .def("getXYZ", &CloudGrabber::getXYZ, "Wait for new XYZ point cloud and return it. If not streaming, will start and stop. (and hang a couple seconds)")
       .def("startXYZRGB", &CloudGrabber::startXYZRGB, "Start streaming XYZRGB")
       .def("getXYZRGB", &CloudGrabber::getXYZRGB, "Wait for new XYZRGB point cloud and return it")
+      .def("startRGBD", &CloudGrabber::startRGBD, "Start streaming RGB+Depth images")
+      .def("getRGBD", &pyGetRGBD, "Wait for new RGB+Depth and return it")
       .def("stop", &CloudGrabber::stop, "Stop streaming")
       ;
 

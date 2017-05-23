@@ -5,6 +5,10 @@
 #include <cstdio>
 #include "expr_ops.hpp"
 #include "sco_common.hpp"
+#include "macros.h"
+#include <iostream>
+#include <sstream>
+
 using namespace std;
 
 namespace sco {
@@ -137,12 +141,12 @@ double Constraint::violation(const DblVec& x) {
   return vecSum(violations(x));
 }
 
-OptProb::OptProb() : model_(createModel(SOLVER_GUROBI)) {}
+OptProb::OptProb() : model_(createModel()) {}
 
-void OptProb::createVariables(const vector<string>& var_names) {
-  createVariables(var_names, DblVec(var_names.size(), -INFINITY), DblVec(var_names.size(), INFINITY));
+VarVector OptProb::createVariables(const vector<string>& var_names) {
+  return createVariables(var_names, DblVec(var_names.size(), -INFINITY), DblVec(var_names.size(), INFINITY));
 }
-void OptProb::createVariables(const vector<string>& var_names, const DblVec& lb, const DblVec& ub) {
+VarVector OptProb::createVariables(const vector<string>& var_names, const DblVec& lb, const DblVec& ub) {
   size_t n_add = var_names.size(), n_cur = vars_.size();
   assert(lb.size() == n_add);
   assert(ub.size() == n_add);
@@ -155,22 +159,35 @@ void OptProb::createVariables(const vector<string>& var_names, const DblVec& lb,
     upper_bounds_.push_back(ub[i]);
   }
   model_->update();
+  return VarVector(vars_.end()-n_add, vars_.end());
 }
-void OptProb::setLowerBounds(const vector<double>& lb) {assert(lb.size() == vars_.size()); lower_bounds_ = lb;}
-void OptProb::setUpperBounds(const vector<double>& ub) {assert(ub.size() == vars_.size()); upper_bounds_ = ub;}
+void OptProb::setLowerBounds(const vector<double>& lb) {
+  assert(lb.size() == vars_.size());
+  lower_bounds_ = lb;
+}
+void OptProb::setUpperBounds(const vector<double>& ub) {
+  assert(ub.size() == vars_.size());
+  upper_bounds_ = ub;
+}
+void OptProb::setLowerBounds(const vector<double>& lb, const vector<Var>& vars) {
+  setVec(lower_bounds_, vars, lb);
+}
+void OptProb::setUpperBounds(const vector<double>& ub, const vector<Var>& vars) {
+  setVec(upper_bounds_, vars, ub);
+}
 
 void OptProb::addCost(CostPtr cost) {
   costs_.push_back(cost);
 }
-void OptProb::addConstr(ConstraintPtr cnt) {
-  if (cnt->type() == EQ) addEqConstr(cnt);
-  else addIneqConstr(cnt);
+void OptProb::addConstraint(ConstraintPtr cnt) {
+  if (cnt->type() == EQ) addEqConstraint(cnt);
+  else addIneqConstraint(cnt);
 }
-void OptProb::addEqConstr(ConstraintPtr cnt) {
+void OptProb::addEqConstraint(ConstraintPtr cnt) {
   assert (cnt->type() == EQ);
   eqcnts_.push_back(cnt);
 }
-void OptProb::addIneqConstr(ConstraintPtr cnt) {
+void OptProb::addIneqConstraint(ConstraintPtr cnt) {
   assert (cnt->type() == INEQ);
   ineqcnts_.push_back(cnt);
 }
@@ -181,7 +198,7 @@ vector<ConstraintPtr> OptProb::getConstraints() const {
   out.insert(out.end(), ineqcnts_.begin(), ineqcnts_.end());
   return out;
 }
-void OptProb::addLinearConstr(const AffExpr& expr, ConstraintType type) {
+void OptProb::addLinearConstraint(const AffExpr& expr, ConstraintType type) {
   if (type == EQ) model_->addEqCnt(expr, "");
   else model_->addIneqCnt(expr, "");
 }
@@ -199,14 +216,12 @@ vector<double> OptProb::getClosestFeasiblePoint(const vector<double>& x) {
   for (int i=0; i < x.size(); ++i) {
     exprInc(obj, exprSquare(exprSub(AffExpr(vars_[i]),x[i])));
   }
-  for (int i=0; i < x.size(); ++i) {
-    model_->setVarBounds(vars_[i], lower_bounds_[i], upper_bounds_[i]);
-  }  
+  model_->setVarBounds(vars_, lower_bounds_, upper_bounds_);
   model_->setObjective(obj);
   CvxOptStatus status = model_->optimize();
   if(status != CVX_SOLVED) {
     model_->writeToFile("/tmp/fail.lp");
-    throw std::runtime_error("couldn't find a feasible point. wrote to /tmp/fail.lp");
+    PRINT_AND_THROW("couldn't find a feasible point. there's probably a problem with variable bounds (e.g. joint limits). wrote to /tmp/fail.lp");
   }
   return model_->getVarValues(vars_);
 }

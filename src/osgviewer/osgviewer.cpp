@@ -1,3 +1,4 @@
+#include "osgviewer.hpp"
 #include <boost/foreach.hpp>
 #include <osg/MatrixTransform>
 #include <osg/ShapeDrawable>
@@ -13,9 +14,13 @@
 #include <osg/BlendFunc>
 #include <osg/io_utils>
 #include <iostream>
+#include <osg/CameraNode>
+#include <osgDB/WriteFile>
+#include <osgDB/ReadFile>
 #include "utils/logging.hpp"
 #include "openrave_userdata_utils.hpp"
-#include "osgviewer.hpp"
+#include <osgText/Font>
+#include <osgText/Text>
 
 using namespace osg;
 using namespace OpenRAVE;
@@ -64,7 +69,9 @@ osg::Drawable* toOsgDrawable(const KinBody::Link::TRIMESH& mesh) {
   return geom;
 }
 
-Node* osgNodeFromGeom(const KinBody::Link::Geometry& geom) {
+osg::Node* osgNodeFromGeom(const KinBody::Link::Geometry& geom) {
+
+
   osg::Geode* geode = new osg::Geode;
 
   switch(geom.GetType()) {
@@ -124,7 +131,29 @@ Node* osgNodeFromGeom(const KinBody::Link::Geometry& geom) {
   osgUtil::SmoothingVisitor sv;
   geode->accept(sv);
 
-  return geode;
+  if (!geom.GetRenderFilename().empty()) {
+    osg::Node* node = osgDB::readNodeFile(geom.GetRenderFilename());
+    if (node) {
+#if 0  // show collision mesh and collision mesh
+      osg::Group* group = new osg::Group;
+      group->addChild(node);
+      group->addChild(geode);
+      return group;
+#else 
+      return node;
+#endif
+    }
+    else {
+      LOG_ERROR("failed to load graphics mesh %s. Falling back to collision geom", geom.GetRenderFilename().c_str());
+      return geode;
+    }
+  }
+  else {
+    return geode;
+  }
+
+
+
 }
 MatrixTransform* osgNodeFromLink(const KinBody::Link& link) {
   /* each geom is a child */
@@ -205,6 +234,46 @@ void AddLights(osg::Group* group) {
 }
 
 
+// http://forum.openscenegraph.org/viewtopic.php?t=7214
+class SnapImageDrawCallback : public osg::CameraNode::DrawCallback {
+public:
+  SnapImageDrawCallback() { _snapImageOnNextFrame = false; }
+  void setFileName(const std::string& filename) { _filename = filename; }
+  const std::string& getFileName() const { return _filename; }
+  void setSnapImageOnNextFrame(bool flag) { _snapImageOnNextFrame = flag; }
+  bool getSnapImageOnNextFrame() const { return _snapImageOnNextFrame; }
+  virtual void operator () (const osg::CameraNode& camera) const {
+    if (!_snapImageOnNextFrame) return;
+    int x,y,width,height;
+    x = camera.getViewport()->x();
+    y = camera.getViewport()->y();
+    width = camera.getViewport()->width();
+    height = camera.getViewport()->height();
+    osg::ref_ptr<osg::Image> image = new osg::Image;
+    image->readPixels(x,y,width,height,GL_RGB,GL_UNSIGNED_BYTE);
+    // make a local copy
+    unsigned char * p = image->data();
+    unsigned int numBytes = image->computeNumComponents(image->getPixelFormat());
+    _image = std::vector<unsigned char>(p, p + height*width*numBytes / sizeof(unsigned char));
+    _height = height;
+    _width = width;
+    // save file
+    if (_filename != "" && osgDB::writeImageFile(*image,_filename))
+      std::cout << "Saved screenshot to `"<<_filename<<"`"<< std::endl;
+    _snapImageOnNextFrame = false;
+  }
+  std::vector<unsigned char> getImage() const { return _image; }
+  unsigned int getHeight() const { return _height; }
+  unsigned int getWidth() const { return _width; }
+protected:
+  std::string _filename;
+  mutable bool _snapImageOnNextFrame;
+  mutable std::vector<unsigned char> _image;
+  mutable unsigned int _height;
+  mutable unsigned int _width;
+};
+
+
 // http://forum.openscenegraph.org/viewtopic.php?t=7806
 void   AddCylinderBetweenPoints(const osg::Vec3& StartPoint, osg::Vec3 EndPoint, float radius, const osg::Vec4& CylinderColor, osg::Group *pAddToThisGroup, bool use_cone)
 {
@@ -281,6 +350,10 @@ public:
   void apply( osg::Geode& geode ) {
     StateSet* ss = geode.getOrCreateStateSet();
     osg::Material* mat = static_cast<Material*>(ss->getAttribute(StateAttribute::MATERIAL));
+    if (!mat) {
+      mat = new osg::Material;
+      ss->setAttribute(mat);
+    }
     mat->setAmbient(osg::Material::FRONT_AND_BACK, color);
     mat->setDiffuse(osg::Material::FRONT_AND_BACK, color);
     if (color[3] < 1) {
@@ -299,6 +372,10 @@ public:
   void apply( osg::Geode& geode ) {
     StateSet* ss = geode.getOrCreateStateSet();
     osg::Material* mat = static_cast<Material*>(ss->getAttribute(StateAttribute::MATERIAL));
+    if (!mat) {
+      mat = new osg::Material;
+      ss->setAttribute(mat);
+    }
     // mat->setTransparency(osg::Material::FRONT_AND_BACK, alpha);
     // for some reason setTransparency doesn't work so well
     osg::Vec4 amb = mat->getAmbient(Material::FRONT_AND_BACK);
@@ -330,7 +407,7 @@ class OsgGraphHandle : public OpenRAVE::GraphHandle {
 public:
   osg::Group* parent;
   osg::ref_ptr<osg::Node> node;
-  OsgGraphHandle(osg::Node* _node, osg::Group* _parent) : node(_node), parent(_parent) {
+  OsgGraphHandle(osg::Node* _node, osg::Group* _parent) : parent(_parent), node(_node) {
     parent->addChild(node);
   }
   ~OsgGraphHandle() {
@@ -338,9 +415,43 @@ public:
   }
 };
 
+KinBodyGroup* GetOsgGroup(KinBody& body) {
+  UserDataPtr rph = trajopt::GetUserData(body, "osg");
+  return rph ? static_cast<KinBodyGroup*>(static_cast<RefPtrHolder*>(rph.get())->rp.get())
+      : NULL;
+}
+KinBodyGroup* CreateOsgGroup(KinBody& body) {
+//  assert(!GetUserData(body, "osg"));
+  LOG_DEBUG("creating graphics for kinbody %s", body.GetName().c_str());
+  osg::Node* node = osgNodeFromKinBody(body);
+  UserDataPtr rph = UserDataPtr(new RefPtrHolder(node));
+  trajopt::SetUserData(body, "osg", rph);
+  return static_cast<KinBodyGroup*>(static_cast<RefPtrHolder*>(rph.get())->rp.get());
 }
 
+osg::ref_ptr<osg::Camera> createHUDCamera( double left, double right, double bottom, double top ) {
+  osg::ref_ptr<osg::Camera> camera = new osg::Camera;
+  camera->setReferenceFrame( osg::Transform::ABSOLUTE_RF );
+  camera->setClearMask( GL_DEPTH_BUFFER_BIT );
+  camera->setRenderOrder( osg::Camera::POST_RENDER );
+  camera->setAllowEventFocus( false );
+  camera->setProjectionMatrix(osg::Matrix::ortho2D(left, right, bottom, top) );
+  camera->getOrCreateStateSet()->setMode(GL_LIGHTING, osg::StateAttribute::OFF );
+  return camera;
+}
+osg::ref_ptr<osgText::Text> createText( const osg::Vec3& pos, const std::string& content, float size, const osg::Vec4& color ) {
+  // static osg::ref_ptr<osgText::Font> g_font = osgText::readFontFile("fonts/arial.ttf");
+  osg::ref_ptr<osgText::Text> text = new osgText::Text;
+  // text->setFont( g_font.get() );
+  text->setColor(color);
+  text->setCharacterSize( size );
+  text->setAxisAlignment( osgText::TextBase::XY_PLANE );
+  text->setPosition( pos );
+  text->setText( content );
+  return text;
+}
 
+}
 
 bool OSGViewer::EventHandler::handle(const osgGA::GUIEventAdapter &ea, osgGA::GUIActionAdapter &aa) {
     bool suppressDefault = false;
@@ -376,7 +487,7 @@ boost::shared_ptr<OSGViewer> OSGViewer::GetOrCreate(OpenRAVE::EnvironmentBasePtr
 
 
 void throw_runtime_error(const osgGA::GUIEventAdapter&) {
-  throw std::runtime_error("pressed escape");
+  PRINT_AND_THROW("pressed escape");
 }
 
 OSGViewer::OSGViewer(EnvironmentBasePtr env) : ViewerBase(env), m_idling(false) {
@@ -392,8 +503,12 @@ OSGViewer::OSGViewer(EnvironmentBasePtr env) : ViewerBase(env), m_idling(false) 
   AddLights(m_root);
   m_cam->setClearColor(osg::Vec4(1,1,1,1));
 
+  osg::ref_ptr<SnapImageDrawCallback> snapImageDrawCallback = new SnapImageDrawCallback();
+  m_cam->setPostDrawCallback (snapImageDrawCallback.get());
+
   AddKeyCallback('h', boost::bind(&OSGViewer::PrintHelp, this), "Display help");
   AddKeyCallback('p', boost::bind(&OSGViewer::Idle, this), "Toggle idle");
+  AddKeyCallback('s', boost::bind(&OSGViewer::TakeScreenshot, this), "Take screenshot");
   AddKeyCallback(osgGA::GUIEventAdapter::KEY_Escape, &throw_runtime_error, "Quit (raise exception)");
   PrintHelp();
   m_viewer.setRunFrameScheme(osgViewer::ViewerBase::ON_DEMAND);
@@ -414,7 +529,7 @@ void OSGViewer::Idle() {
   else { // start idling
     m_idling = true;
     m_request_stop_idling=false;
-    LOG_INFO("press p to stop idling");
+    printf("press p to stop idling\n");
     while (!m_viewer.done() && !m_request_stop_idling) {
       if (m_viewer.checkNeedToDoFrame()) m_viewer.frame();
       usleep(.03*1e6);
@@ -428,24 +543,15 @@ void OSGViewer::Draw() {
   m_viewer.frame();
 }
 
-void OSGViewer::RemoveKinBody(OpenRAVE::KinBodyPtr pbody) {
-  KinBodyGroup* node = (KinBodyGroup*)::GetUserData(*pbody, "osg").get();
-  m_root->removeChild(node);
-  ::RemoveUserData(*pbody, "osg");
-}
-
-KinBodyGroup* GetOsgGroup(KinBody& body) {
-  UserDataPtr rph = GetUserData(body, "osg");
-  return rph ? static_cast<KinBodyGroup*>(static_cast<RefPtrHolder*>(rph.get())->rp.get())
-      : NULL;
-}
-KinBodyGroup* CreateOsgGroup(KinBody& body) {
-  assert(!GetUserData(body, "osg"));
-  LOG_DEBUG("creating graphics for kinbody %s", body.GetName().c_str());
-  osg::Node* node = osgNodeFromKinBody(body);
-  UserDataPtr rph = UserDataPtr(new RefPtrHolder(node));
-  SetUserData(body, "osg", rph);
-  return static_cast<KinBodyGroup*>(static_cast<RefPtrHolder*>(rph.get())->rp.get());
+void OSGViewer::RemoveKinBody(OpenRAVE::KinBodyPtr body) {
+  KinBodyGroup* node = GetOsgGroup(*body);
+  if (node) {
+    m_root->removeChild(node);
+    trajopt::RemoveUserData(*body, "osg");
+  }
+  else {
+    LOG_ERROR("tried to remove kinbody that does not exist in osg");
+  }
 }
 
 
@@ -466,6 +572,42 @@ void OSGViewer::UpdateSceneData() {
     group->update();
   }
   m_viewer.requestRedraw();
+}
+
+void OSGViewer::SetBkgndColor(const RaveVectorf& color) {
+  m_cam->setClearColor(toOsgVec4(color));
+}
+
+void OSGViewer::TakeScreenshot(const std::string& filename) {
+  osg::ref_ptr<SnapImageDrawCallback> snapImageDrawCallback = dynamic_cast<SnapImageDrawCallback*> (m_cam->getPostDrawCallback());
+  if(snapImageDrawCallback.get()) {
+    snapImageDrawCallback->setFileName(filename);
+    snapImageDrawCallback->setSnapImageOnNextFrame(true);
+  } else {
+    std::cout << "Warning: could not take screenshot" << std::endl;
+  }
+}
+
+void OSGViewer::TakeScreenshot() {
+  time_t rawtime;
+  struct tm * timeinfo;
+  char buffer[80];
+  time (&rawtime);
+  timeinfo = localtime(&rawtime);
+  strftime(buffer,80,"%Y%m%d-%I%M%S.png",timeinfo);
+  std::string filename(buffer);
+  TakeScreenshot(filename);
+}
+
+bool OSGViewer::GetLastScreenshot(std::vector<unsigned char>& image, unsigned int& height, unsigned int& width)
+{
+  osg::ref_ptr<SnapImageDrawCallback> snapImageDrawCallback = dynamic_cast<SnapImageDrawCallback*> (m_cam->getPostDrawCallback());
+  if(!snapImageDrawCallback.get())
+    return false;
+  image = snapImageDrawCallback->getImage();
+  height = snapImageDrawCallback->getHeight();
+  width = snapImageDrawCallback->getWidth();
+  return true;
 }
 
 void OSGViewer::AddMouseCallback(const MouseCallback& cb) {
@@ -495,7 +637,7 @@ void OSGViewer::PrintHelp() {
   for (EventHandler::Key2Desc::iterator it = m_handler->descs.begin(); it != m_handler->descs.end(); ++it) {
     ss << boost::format("%c:       %s\n")%((char)it->first)%(it->second);
   }
-  LOG_INFO(ss.str().c_str());
+  LOG_INFO("%s", ss.str().c_str());
 }
 
 
@@ -513,8 +655,20 @@ void SetTransparency(GraphHandlePtr handle, float alpha) {
 }
 
 void OSGViewer::SetAllTransparency(float alpha) {
+  UpdateSceneData();
   SetTransparencyVisitor visitor(alpha);
   m_root->accept(visitor);
+}
+void OSGViewer::SetTransparency(OpenRAVE::KinBodyPtr body, float alpha) {
+  UpdateSceneData();
+  KinBodyGroup* node = GetOsgGroup(*body);
+  if (node) {
+    SetTransparencyVisitor visitor(alpha);
+    node->accept(visitor);
+  }
+  else {
+    LOG_ERROR("SetTransparency: body doesn't exist in osg!");
+  }
 }
 
 OpenRAVE::GraphHandlePtr OSGViewer::drawarrow(const RaveVectorf& p1, const RaveVectorf& p2, float fwidth, const RaveVectorf& color) {
@@ -524,8 +678,14 @@ OpenRAVE::GraphHandlePtr OSGViewer::drawarrow(const RaveVectorf& p1, const RaveV
 }
 
 OpenRAVE::GraphHandlePtr OSGViewer::plot3 (const float *ppoints, int numPoints, int stride, float fPointSize, const RaveVector< float > &color, int drawstyle){
+  vector<float> colordata(numPoints*3);
+  for (int i=0; i < numPoints; ++i) {
+    colordata[3*i] = color[0];
+    colordata[3*i+1] = color[1];
+    colordata[3*i+2] = color[2];
+  }
   vector< RaveVectorf > colors(numPoints, color);
-  return plot3(ppoints, numPoints, stride, fPointSize, (float*)colors.data(), drawstyle);
+  return plot3(ppoints, numPoints, stride, fPointSize, colordata.data(), drawstyle);
 }
 
 OpenRAVE::GraphHandlePtr OSGViewer::plot3(const float* ppoints, int numPoints, int stride, float pointsize, const float* colors, int drawstyle, bool bhasalpha) {
@@ -559,7 +719,7 @@ OpenRAVE::GraphHandlePtr OSGViewer::plot3(const float* ppoints, int numPoints, i
   if (colors != NULL) {
     Vec4Array* osgCols = new Vec4Array;
     for (int i=0; i < numPoints; ++i) {
-      const float* p = colors + i*4;
+      const float* p = colors + i*3;
       osgCols->push_back(osg::Vec4(p[0], p[1], p[2],1));
     }
     geom->setColorArray(osgCols);
@@ -615,6 +775,14 @@ GraphHandlePtr OSGViewer::PlotAxes(const OpenRAVE::Transform& T, float size) {
   AddCylinderBetweenPoints(o, y, size/10, osg::Vec4(0,1,0,1), group, false);
   AddCylinderBetweenPoints(o, z, size/10, osg::Vec4(0,0,1,1), group, false);
   return GraphHandlePtr(new OsgGraphHandle(group, m_root.get()));
+}
+GraphHandlePtr OSGViewer::PlotSphere(const OpenRAVE::Vector& pt, float radius) {
+  osg::Geode* geode = new osg::Geode;
+  osg::Sphere* sphere = new osg::Sphere(toOsgVec3(pt), radius);
+  osg::ShapeDrawable* sphereDrawable = new osg::ShapeDrawable(sphere);
+  geode->addDrawable(sphereDrawable);
+  return GraphHandlePtr(new OsgGraphHandle(geode, m_root.get()));
+  
 }
 
 OpenRAVE::GraphHandlePtr OSGViewer::drawtrimesh (const float *ppoints, int stride, const int *pIndices, int numTriangles, const RaveVectorf &color) {
@@ -725,4 +893,17 @@ OpenRAVE::GraphHandlePtr  OSGViewer::drawlinestrip(const float *ppoints,  int nu
 }
 OpenRAVE::GraphHandlePtr  OSGViewer::drawlinelist(const float *ppoints,  int numPoints, int stride, float fwidth, const RaveVectorf &color) {
   return _drawlines(osg::PrimitiveSet::LINES, ppoints, numPoints, stride, fwidth, color);
+}
+
+
+OpenRAVE::GraphHandlePtr OSGViewer::drawtext(const std::string& text, float x, float y, float fontsize, const OpenRAVE::Vector& color) {
+  osg::ref_ptr<osg::Geode> textGeode = new osg::Geode;
+  textGeode->addDrawable( createText(osg::Vec3(x, y, 0.0f),text,fontsize, toOsgVec4(color)));
+  if (!m_hudcam) {
+    m_hudcam = createHUDCamera(0, 1024, 0, 768);
+    m_root->addChild(m_hudcam);
+  }
+  return GraphHandlePtr(new OsgGraphHandle(textGeode, m_hudcam.get()));
+
+    
 }

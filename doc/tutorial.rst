@@ -21,46 +21,16 @@ The optimization will pause at every iteration and plot the current trajectory a
 
 Every problem description contains four sections: basic_info, costs, constraints, and init_info (i.e., initialization info).
 
-Here, there are two cost components: joint-space velocity, and the collision penalty. There is one constraint: the final joint state. 
-
-Let's inspect the terminal output after running the script. The following lines should appear at the end of the output.
-
-::
-
-  [INFO optimizers.cpp:225] iteration 9
-  [INFO optimizers.cpp:294] 
-                  |   oldexact |    dapprox |     dexact |      ratio
-            COSTS | -------------------------------------------------
-        joint_vel |  1.776e+00 |  2.249e-05 |  2.249e-05 |  1.000e+00
-   cont_collision |  0.000e+00 |  0.000e+00 |  0.000e+00 | (     nan)
-   cont_collision |  0.000e+00 |  0.000e+00 |  0.000e+00 | (     nan)
-   cont_collision |  0.000e+00 |  0.000e+00 |  0.000e+00 | (     nan)
-   cont_collision |  0.000e+00 | -3.796e-10 |  0.000e+00 | (-0.000e+00)
-   cont_collision |  0.000e+00 | -3.801e-10 |  0.000e+00 | (-0.000e+00)
-   cont_collision |  0.000e+00 | -3.947e-10 | -5.022e-04 | (1.272e+06)
-   cont_collision |  0.000e+00 | -7.592e-10 |  0.000e+00 | (-0.000e+00)
-   cont_collision |  0.000e+00 | -1.139e-09 |  0.000e+00 | (-0.000e+00)
-   cont_collision |  0.000e+00 | -7.592e-10 |  0.000e+00 | (-0.000e+00)
-            TOTAL |  1.776e+00 |  2.249e-05 | -4.797e-04 | -2.133e+01
-  [INFO optimizers.cpp:305] converged because improvement was small (2.249e-05 < 1.000e-04)
-  [INFO optimizers.cpp:343] woo-hoo! constraints are satisfied (to tolerance 1.00e-04)
-
-Here, the optimization converged in 9 iterations. Each line in the table shows a cost or constraint term and it's value and improvement in the latest iteration.
-The "joint_vel" line refers to the joint velocity cost.
-The "cont_collision" lines each refer to the collision cost for a time interval [t,t+1].
-As you can see, all of the collision costs are zero, meaning the trajectory is safely out of collision, with a safety margin of `dist_pen` meters.
-Note that there's no term for the "joint" constraint. That's because this constraint is a linear constraint in the optimization problem, and the table only shows nonlinear constraints which must be approximated at each iteration.
-As you can see, there's not a 1-1 correspondence between the "cost" and "constraint" items in the json file and the costs and constraints that the optimization algorithm sees.
-(If you're digging into the C++ API, note that the table rows correspond to `Cost <../../dox_build/classsco_1_1_cost.html>`_ and `Constraint <../../dox_build/classsco_1_1_constraint.html>`_ objects).
+Here, there are two cost components: joint-space velocity, and the collision penalty. There is one constraint: the final joint state.
 
 .. note:: Why do we use a collision cost, rather than a constraint? In the sequential convex optimization procedure, constraints get converted into costs--specifically, :math:`\ell_1` penalties (see the paper). So the difference between a constraint and an :math:`\ell_1` cost is that for a constraint, the optimizer checks to see if it is satisfied (to some tolerance), and if not, it jacks up the penalty coefficient. The thing about collisions is that it's often necessary to violate the safety margin, e.g. when you need to contact an object. So you're best off handling the logic yourself of adjusting penalties and safety margins, based on your specific problem.
 
+See :ref:`collcosts` for more info on the collision penalty.
 
 
 Move arm to pose target
 -------------------------
 Full source code:  :file:`python_examples/arm_to_cart_target.py`
-
 
 Next, let's solve the same problem, but instead of specifying the target joint position, we'll specify the target pose.
 
@@ -79,18 +49,9 @@ Initialize using collision-free IK:
 ...
 
 .. literalinclude:: ../python_examples/arm_to_cart_target.py
+  :language: python
   :start-after: BEGIN init
   :end-before: END init
-
-Now you'll notice an extra couple lines of the optimizer output::
-
-                |   oldexact |    dapprox |     dexact |      ratio
-          COSTS | -------------------------------------------------
-    ...
-    CONSTRAINTS | -------------------------------------------------
-           pose |  4.326e-05 |  4.326e-05 |  3.953e-05 |  9.138e-01
-
-As you can see, the pose constraint is satisfied at convergence
 
 
 .. _benchmark:
@@ -103,6 +64,49 @@ Whether you use a straight-line initialization, stationary initialization, or so
 You can see this strategy in ``benchmark.py``, which uses four waypoints. Using this strategy, the algorithm solves 100% of 204 planning problems in the three provided scenes (tabletop, bookshelves, and kitchen_counter).
 
 
+All in all, there are several ways to initialize:
+
+- **Stationary**: Initialize with the trajectory that stands still for ``n_steps`` timesteps.
+
+  .. code-block:: python
+
+    "init_info" : {
+        "type" : "stationary"
+    }
+
+- **With a given trajectory**: 
+
+  .. code-block:: python
+
+    "init_info" : {
+        "type" : "given_traj"
+        "data" : [[ 0.   ,  0.   ,  0.   ],
+                   [ 0.111,  0.222,  0.333],
+                   [ 0.222,  0.444,  0.667],
+                   [ 0.333,  0.667,  1.   ],
+                   [ 0.444,  0.889,  1.333],
+                   [ 0.556,  1.111,  1.667],
+                   [ 0.667,  1.333,  2.   ],
+                   [ 0.778,  1.556,  2.333],
+                   [ 0.889,  1.778,  2.667],
+                   [ 1.   ,  2.   ,  3.   ]]
+    }
+    
+  ``data`` must be a 2d array with ``n_steps`` rows, and the first row must be the robot's current DOF values
+    
+- **With a straight line in configuration space**.
+
+  .. code-block:: python
+
+    "init_info" : {
+        "type" : "given_traj"
+        "endpoint" : [ 1.   ,  2.   ,  3.   ]
+    }
+    
+  The robot's DOF values are used for the start point of the line.
+    
+    
+    
 .. _rollingyourown:
 
 Rolling your own costs and constraints in python
@@ -113,7 +117,8 @@ Full source code:  :file:`python_examples/this_side_up.py`
 
 This next script shows how you can easily implement your own costs and constraints. The constraint we consider here says that a certain vector defined in the robot gripper frame must point up (in the world coordinates). For example, one might imagine that the robot is holding a glass of water, and we don't want it to spill.
 
-The basic setup of the problem is similar to the previous examples.
+The basic setup of the problem is similar to the previous examples. Before getting to the python constraint functions, we'll add some constraints to the problem in the json file, including a cartesian velocity constraint.
+
 We set a pose constraint at the end of the trajectory. This time, we ignore the rotation (by setting :code:`rot_coefs = [0,0,0]`).
 
 .. literalinclude:: ../python_examples/this_side_up.py
@@ -126,7 +131,7 @@ We also add a constraint on the end-effector displacement at each step:
   :start-after: BEGIN vel
   :end-before: END vel
 
-The parameter :code:`"distance_limit : .05"` means the position of the link (r_gripper_tool_frame) moves by less than .05 in each timestep, for each component (x,y,z).
+The parameter :code:`"max_displacement : .05"` means the position of the link (r_gripper_tool_frame) moves by less than .05 in each timestep, for each component (x,y,z).
 
 Now, let's look at the user-defined costs and constraints. We define an vector-valued error function :code:`f(x)`, and the Jacobian of this function :code:`dfdx(x)`. f(x) returns the x and y components of the transformed vector (which both equal zero if the vector points up).
 

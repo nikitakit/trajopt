@@ -1,6 +1,6 @@
 #include <openrave-core.h>
 #include <openrave/openrave.h>
-
+#include "o3.hpp"
 #include "trajopt/problem_description.hpp"
 #include "trajopt/rave_utils.hpp"
 #include "trajopt/utils.hpp"
@@ -89,33 +89,6 @@ QuatTrajProb::QuatTrajProb(const MatrixXd& q, int n_steps, float dt) : q_(q), dt
 
 }
 
-class AngVelCost : public Cost {
-public:
-  AngVelCost(const MatrixXd& q, const VarArray& r, double dt) : q_(q), r_(r), dt_(dt) {}
-  double value(const DblVec& x) {
-    MatrixXd rvals = getTraj(x, r_);
-    MatrixXd qnew(q_.rows(), q_.cols());
-    for (int i=0; i < qnew.rows(); ++i) {
-      qnew.row(i) = quatMult(q_.row(i), quatExp(rvals.row(i)));
-    }
-    MatrixXd wvals = getW(qnew, dt_);
-    return wvals.array().square().sum();
-  }
-  ConvexObjectivePtr convex(const DblVec& x, Model* model) {
-    ConvexObjectivePtr out(new ConvexObjective(model));
-    MatrixXd wvals = getW(q_, dt_);
-    for (int i=0; i < wvals.rows(); ++i) {
-      for (int j=0; j < wvals.cols(); ++j) {        
-        out->addQuadExpr(exprSquare( (r_(i+1,j) - r_(i,j))*(1/dt_)  + wvals(i,j) ));
-      }
-    }
-    return out;
-  }
-  const MatrixXd& q_;
-  VarArray r_;
-  double dt_;
-};
-
 
 void Callback(OptProb* prob, DblVec& x) {
   dynamic_cast<QuatTrajProb*>(prob)->Callback(x);
@@ -154,7 +127,7 @@ int main(int argc, char** argv) {
   MatrixXd inittraj = MatrixXd::Zero(n_steps, 3);
   opt.initialize(DblVec(inittraj.data(),inittraj.data() + 3*n_steps));
   opt.addCallback(&Callback);
-  OptStatus status = opt.optimize();
+  opt.optimize();
   
   
   cout << "slerp cost: " << getW(slerptraj, dt).array().square().sum() << endl;

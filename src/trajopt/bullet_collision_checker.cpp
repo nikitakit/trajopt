@@ -18,17 +18,27 @@ using namespace OpenRAVE;
 
 namespace {
 
-enum CollisionFilterGroups {
-  RobotFilter = 1,
-  KinBodyFilter = 2
-};
-
+#define METERS 
+// there's some scale-dependent parameters. By convention I'll put METERS to mark it
 const float MARGIN = 0;
 
+#if 1
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 ostream &operator<<(ostream &stream, const btVector3& v) {
   stream << v.x() << " " << v.y() << " " << v.z();
   return stream;
 }
+ostream &operator<<(ostream &stream, const btQuaternion& v) {
+  stream << v.w() << " " << v.x() << " " << v.y() << " " << v.z();
+  return stream;
+}
+ostream &operator<<(ostream &stream, const btTransform& v) {
+  stream << v.getOrigin() << " " << v.getRotation();
+  return stream;
+}
+#pragma GCC diagnostic pop
+#endif
 
 class CollisionObjectWrapper : public btCollisionObject {
 public:
@@ -73,7 +83,7 @@ btTransform toBt(const OR::Transform& t){
 }
 
 bool isIdentity(const OpenRAVE::Transform& T) {
-  float e = 1e-7;
+  float e = 1e-6;
   return
       fabs(T.trans.x) < e &&
       fabs(T.trans.y) < e &&
@@ -85,28 +95,70 @@ bool isIdentity(const OpenRAVE::Transform& T) {
 }
 
 
+void GetAverageSupport(const btConvexShape* shape, const btVector3& localNormal, float& outsupport, btVector3& outpt) {
+  btVector3 ptSum(0,0,0);
+  float ptCount = 0;
+  float maxSupport=-1000;
+  const float EPSILON = 1e-3;
+  const btPolyhedralConvexShape* pshape = dynamic_cast<const btPolyhedralConvexShape*>(shape);
+  if (pshape) {
+    int nPts = pshape->getNumVertices();
+
+    for (int i=0; i < nPts; ++i) {
+      btVector3 pt;
+      pshape->getVertex(i, pt);
+//      cout << "pt: " << pt << endl;
+      float sup  = pt.dot(localNormal);
+      if (sup > maxSupport + EPSILON) {
+        ptCount=1;
+        ptSum = pt;
+        maxSupport = sup;
+      }
+      else if (sup < maxSupport - EPSILON) {
+      }
+      else {
+        ptCount += 1;
+        ptSum += pt;
+      }
+    }
+    outsupport = maxSupport;
+    outpt = ptSum / ptCount;
+  }
+  else  {
+    outpt = shape->localGetSupportingVertexWithoutMargin(localNormal);
+    outsupport = localNormal.dot(outpt);
+  }
+}
 
 
 btCollisionShape* createShapePrimitive(OR::KinBody::Link::GeometryPtr geom, bool useTrimesh, CollisionObjectWrapper* cow) {
 
-  btCollisionShape* subshape;
+  btCollisionShape* subshape=0;
+
+#if OPENRAVE_VERSION_MINOR <= 8
+    #define GT_Box KinBody::Link::GEOMPROPERTIES::GeomBox 
+    #define GT_Sphere KinBody::Link::GEOMPROPERTIES::GeomSphere 
+    #define GT_Cylinder KinBody::Link::GEOMPROPERTIES::GeomCylinder 
+    #define GT_TriMesh KinBody::Link::GEOMPROPERTIES::GeomTrimesh 
+    #define TriMesh KinBody::Link::TRIMESH
+#endif
 
   switch (geom->GetType()) {
-  case KinBody::Link::GEOMPROPERTIES::GeomBox:
+  case OpenRAVE::GT_Box:
     subshape = new btBoxShape(toBt(geom->GetBoxExtents()));
     break;
-  case KinBody::Link::GEOMPROPERTIES::GeomSphere:
+  case OpenRAVE::GT_Sphere:
     subshape = new btSphereShape(geom->GetSphereRadius());
     break;
-  case KinBody::Link::GEOMPROPERTIES::GeomCylinder:
+  case OpenRAVE::GT_Cylinder:
     // cylinder axis aligned to Y
   {
     float r = geom->GetCylinderRadius(), h = geom->GetCylinderHeight() / 2;
-    subshape = new btCylinderShapeZ(btVector3(r, r, h / 2));
+    subshape = new btCylinderShapeZ(btVector3(r, r, h));
     break;
   }
-  case KinBody::Link::GEOMPROPERTIES::GeomTrimesh: {
-    const KinBody::Link::TRIMESH &mesh = geom->GetCollisionMesh();
+  case OpenRAVE::GT_TriMesh: {
+    const OpenRAVE::TriMesh &mesh = geom->GetCollisionMesh();
     assert(mesh.indices.size() >= 3);
     boost::shared_ptr<btTriangleMesh> ptrimesh(new btTriangleMesh());
 
@@ -150,6 +202,7 @@ btCollisionShape* createShapePrimitive(OR::KinBody::Link::GeometryPtr geom, bool
       }
       
     }     
+    break;
   }
   default:
     assert(0 && "unrecognized collision shape type");
@@ -162,13 +215,14 @@ btCollisionShape* createShapePrimitive(OR::KinBody::Link::GeometryPtr geom, bool
 COWPtr CollisionObjectFromLink(OR::KinBody::LinkPtr link, bool useTrimesh) {
   LOG_DEBUG("creating bt collision object from from %s",link->GetName().c_str());
 
-  const std::vector<boost::shared_ptr<OpenRAVE::KinBody::Link::GEOMPROPERTIES> > & geometries=link->GetGeometries();
+  const std::vector<boost::shared_ptr<OpenRAVE::KinBody::Link::Geometry> > & geometries=link->GetGeometries();
 
   if (geometries.empty()) return COWPtr();
 
   COWPtr cow(new CollisionObjectWrapper(link.get()));
 
-  if ( false && (link->GetGeometries().size() == 1) && isIdentity(link->GetGeometry(0)->GetTransform())) {
+  if ((link->GetGeometries().size() == 1) && isIdentity(link->GetGeometry(0)->GetTransform())) {
+    LOG_DEBUG("using identity for %s", link->GetName().c_str());
     btCollisionShape* shape = createShapePrimitive(link->GetGeometry(0), useTrimesh, cow.get());
     shape->setMargin(MARGIN);
     cow->manage(shape);
@@ -176,12 +230,13 @@ COWPtr CollisionObjectFromLink(OR::KinBody::LinkPtr link, bool useTrimesh) {
 
   }
   else {
+    LOG_DEBUG("NOT using identity for %s", link->GetName().c_str());
     btCompoundShape* compound = new btCompoundShape(/*dynamicAABBtree=*/false);
     cow->manage(compound);
     compound->setMargin(MARGIN); //margin: compound. seems to have no effect when positive but has an effect when negative
     cow->setCollisionShape(compound);
 
-    BOOST_FOREACH(const boost::shared_ptr<OpenRAVE::KinBody::Link::GEOMPROPERTIES>& geom, geometries) {
+    BOOST_FOREACH(const boost::shared_ptr<OpenRAVE::KinBody::Link::Geometry>& geom, geometries) {
 
       btCollisionShape* subshape = createShapePrimitive(geom, useTrimesh, cow.get());
       if (subshape != NULL) {
@@ -286,14 +341,29 @@ public:
   virtual void PlotCollisionGeometry(vector<OpenRAVE::GraphHandlePtr>& handles);
   virtual void ExcludeCollisionPair(const KinBody::Link& link0, const KinBody::Link& link1) {
     m_excludedPairs.insert(LinkPair(&link0, &link1));
-    m_allowedCollisionMatrix(GetCow(&link0)->m_index, GetCow(&link1)->m_index) = 0;
+    COW *cow0 = GetCow(&link0), *cow1 = GetCow(&link1);
+    if (cow0 && cow1) m_allowedCollisionMatrix(cow0->m_index, cow1->m_index) = 0;
+  }
+  virtual void IncludeCollisionPair(const KinBody::Link& link0, const KinBody::Link& link1) {
+    m_excludedPairs.erase(LinkPair(&link0, &link1));
+    COW *cow0 = GetCow(&link0), *cow1 = GetCow(&link1);
+    if (cow0 && cow1) m_allowedCollisionMatrix(cow0->m_index, cow1->m_index) = 1;
+  }
+  virtual bool RayCastCollision(const OpenRAVE::Vector& point1, const OpenRAVE::Vector& point2) {
+    btVector3 btFrom = toBt(point1);
+    btVector3 btTo = toBt(point2);
+    btCollisionWorld::ClosestRayResultCallback res(btFrom, btTo);
+    UpdateBulletFromRave();
+    m_world->updateAabbs();
+    m_world->rayTest(btFrom, btTo, res);
+    return res.hasHit();
   }
   // collision checking
   virtual void AllVsAll(vector<Collision>& collisions);
-  virtual void LinksVsAll(const vector<KinBody::LinkPtr>& links, vector<Collision>& collisions);
-  virtual void LinkVsAll(const KinBody::Link& link, vector<Collision>& collisions);
-  virtual void ContinuousCheckTrajectory(const TrajArray& traj, RobotAndDOF& rad, vector<Collision>&);
-  virtual void CastVsAll(RobotAndDOF& rad, const vector<KinBody::LinkPtr>& links, const DblVec& startjoints, const DblVec& endjoints, vector<Collision>& collisions);
+  virtual void LinksVsAll(const vector<KinBody::LinkPtr>& links, vector<Collision>& collisions, short filterMask);
+  virtual void LinkVsAll(const KinBody::Link& link, vector<Collision>& collisions, short filterMask);
+  virtual void ContinuousCheckTrajectory(const TrajArray& traj, Configuration& rad, vector<Collision>&);
+  virtual void CastVsAll(Configuration& rad, const vector<KinBody::LinkPtr>& links, const DblVec& startjoints, const DblVec& endjoints, vector<Collision>& collisions);
   ////
   ///////
 
@@ -302,7 +372,7 @@ public:
     return (it == m_link2cow.end()) ? 0 : it->second;
   }
   void SetCow(const KinBody::Link* link, COW* cow) {m_link2cow[link] = cow;}
-  void LinkVsAll_NoUpdate(const KinBody::Link& link, vector<Collision>& collisions);
+  void LinkVsAll_NoUpdate(const KinBody::Link& link, vector<Collision>& collisions, short filterMask);
   void UpdateBulletFromRave();
   void AddKinBody(const OR::KinBodyPtr& body);
   void RemoveKinBody(const OR::KinBodyPtr& body);
@@ -333,13 +403,13 @@ struct CollisionCollector : public btCollisionWorld::ContactResultCallback {
     const KinBody::Link* linkB = getLink(colObj1Wrap->getCollisionObject());
     m_collisions.push_back(Collision(linkA, linkB, toOR(cp.m_positionWorldOnA), toOR(cp.m_positionWorldOnB),
         toOR(cp.m_normalWorldOnB), cp.m_distance1));
-    LOG_DEBUG("CollisionCollector: adding collision %s-%s", linkA->GetName().c_str(), linkB->GetName().c_str());
+    LOG_DEBUG("CollisionCollector: adding collision %s-%s (%.4f)", linkA->GetName().c_str(), linkB->GetName().c_str(), cp.m_distance1);
     return 1;
   }
   bool needsCollision(btBroadphaseProxy* proxy0) const {
-    bool maskcollides = (proxy0->m_collisionFilterGroup & m_collisionFilterMask) != 0;
-    maskcollides = maskcollides && (m_collisionFilterGroup & proxy0->m_collisionFilterMask);
-    return maskcollides && m_cc->CanCollide(m_cow, static_cast<CollisionObjectWrapper*>(proxy0->m_clientObject));
+    return (proxy0->m_collisionFilterGroup & m_collisionFilterMask)
+        && (m_collisionFilterGroup & proxy0->m_collisionFilterMask)
+        && m_cc->CanCollide(m_cow, static_cast<CollisionObjectWrapper*>(proxy0->m_clientObject));
   }
 };
 
@@ -391,6 +461,7 @@ void BulletCollisionChecker::SetContactDistance(float dist) {
 
 
 void BulletCollisionChecker::AllVsAll(vector<Collision>& collisions) {
+  LOG_WARN("WARNING: AllVsAll seems to be broken! (since a8f8da01)");
   UpdateBulletFromRave();
   LOG_DEBUG("AllVsAll");
   m_world->performDiscreteCollisionDetection();
@@ -426,32 +497,33 @@ void BulletCollisionChecker::AllVsAll(vector<Collision>& collisions) {
   }
 }
 
-void BulletCollisionChecker::LinksVsAll(const vector<KinBody::LinkPtr>& links, vector<Collision>& collisions) {
+void BulletCollisionChecker::LinksVsAll(const vector<KinBody::LinkPtr>& links, vector<Collision>& collisions, short filterMask) {
 //  AllVsAll(collisions);
 //  return;
 
   UpdateBulletFromRave();
   m_world->updateAabbs();
-
-  BOOST_FOREACH(const KinBody::LinkPtr& link, links) {
-    LinkVsAll_NoUpdate(*link, collisions);// xxx just testing
+  
+  for (int i=0; i < links.size(); ++i) {
+    LinkVsAll_NoUpdate(*links[i], collisions, filterMask);
   }
 }
 
 
-void BulletCollisionChecker::LinkVsAll(const KinBody::Link& link, vector<Collision>& collisions) {
+void BulletCollisionChecker::LinkVsAll(const KinBody::Link& link, vector<Collision>& collisions, short filterMask) {
   UpdateBulletFromRave();
-  LinkVsAll_NoUpdate(link, collisions);
+  LinkVsAll_NoUpdate(link, collisions, filterMask);
 }
 
-void BulletCollisionChecker::LinkVsAll_NoUpdate(const KinBody::Link& link, vector<Collision>& collisions) {
+void BulletCollisionChecker::LinkVsAll_NoUpdate(const KinBody::Link& link, vector<Collision>& collisions, short filterMask) {
   if (link.GetGeometries().empty()) return;
   CollisionObjectWrapper* cow = GetCow(&link);
   CollisionCollector cc(collisions, cow, this);
+  cc.m_collisionFilterMask = filterMask;
   m_world->contactTest(cow, cc);
 }
 
-class KinBodyCollisionData;
+struct KinBodyCollisionData;
 typedef boost::shared_ptr<KinBodyCollisionData> CDPtr;
 struct KinBodyCollisionData : public OpenRAVE::UserData {
   OpenRAVE::KinBodyWeakPtr body;
@@ -466,9 +538,9 @@ void BulletCollisionChecker::AddKinBody(const OR::KinBodyPtr& body) {
   int filterGroup = body->IsRobot() ? RobotFilter : KinBodyFilter;
   const vector<OR::KinBody::LinkPtr> links = body->GetLinks();
 
-  SetUserData(*body, "bt", cd);
+  trajopt::SetUserData(*body, "bt", cd);
   
-  bool useTrimesh = GetUserData(*body, "bt_use_trimesh");
+  bool useTrimesh = trajopt::GetUserData(*body, "bt_use_trimesh");
   BOOST_FOREACH(const OR::KinBody::LinkPtr& link, links) {
     if (link->GetGeometries().size() > 0) {
       COWPtr new_cow = CollisionObjectFromLink(link, useTrimesh); 
@@ -496,7 +568,7 @@ void BulletCollisionChecker::RemoveKinBody(const OR::KinBodyPtr& body) {
       m_link2cow.erase(link.get());      
     }
   }
-  RemoveUserData(*body, "bt");
+  trajopt::RemoveUserData(*body, "bt");
 }
 
 template <typename T>
@@ -522,7 +594,7 @@ void BulletCollisionChecker::AddAndRemoveBodies(const vector<KinBodyPtr>& curVec
   vector<KinBodyPtr> toRemove;
   SetDifferences(curVec, prevVec, toAdd, toRemove);
   BOOST_FOREACH(const KinBodyPtr& body, toAdd) {
-    assert(!GetUserData(*body, "bt"));
+    assert(!trajopt::GetUserData(*body, "bt"));
     AddKinBody(body);
   }
   BOOST_FOREACH(const KinBodyPtr& body, toRemove) {
@@ -547,9 +619,10 @@ void BulletCollisionChecker::UpdateAllowedCollisionMatrix() {
     const KinBody::Link* linkB = pair.second;
     const CollisionObjectWrapper* cowA = GetCow(linkA);
     const CollisionObjectWrapper* cowB = GetCow(linkB);
-    assert(cowA != NULL && cowB != NULL);
-    m_allowedCollisionMatrix(cowA->m_index, cowB->m_index) = 0;
-    m_allowedCollisionMatrix(cowB->m_index, cowA->m_index) = 0;
+    if (cowA != NULL && cowB != NULL) {
+      m_allowedCollisionMatrix(cowA->m_index, cowB->m_index) = 0;
+      m_allowedCollisionMatrix(cowB->m_index, cowA->m_index) = 0;
+    }
   }
 }
 
@@ -561,7 +634,7 @@ void BulletCollisionChecker::UpdateBulletFromRave() {
     AddAndRemoveBodies(bodies, m_prevbodies, addedBodies);
     m_prevbodies=bodies;
     float contactDistanceOld = GetContactDistance();
-    SetContactDistance(.1);
+    SetContactDistance(.1 METERS);
     BOOST_FOREACH(const KinBodyPtr& body, addedBodies) {
       IgnoreZeroStateSelfCollisions(body);
     }
@@ -632,7 +705,7 @@ void ContinuousCheckShape(btCollisionShape* shape, const vector<btTransform>& tr
 }
 
 
-void BulletCollisionChecker::ContinuousCheckTrajectory(const TrajArray& traj, RobotAndDOF& rad, vector<Collision>& collisions) {
+void BulletCollisionChecker::ContinuousCheckTrajectory(const TrajArray& traj, Configuration& rad, vector<Collision>& collisions) {
   UpdateBulletFromRave();
   m_world->updateAabbs();
 
@@ -658,7 +731,7 @@ void BulletCollisionChecker::ContinuousCheckTrajectory(const TrajArray& traj, Ro
 
   typedef vector<btTransform> TransformVec;
   vector<TransformVec> link2transforms(links.size(), TransformVec(traj.rows()));
-  RobotBase::RobotStateSaver save = rad.Save();
+  Configuration::SaverPtr save = rad.Save();
 
   for (int iStep=0; iStep < traj.rows(); ++iStep) {
     rad.SetDOFValues(toDblVec(traj.row(iStep)));
@@ -820,38 +893,78 @@ struct CastCollisionCollector : public CollisionCollector {
 
 btScalar CastCollisionCollector::addSingleResult(btManifoldPoint& cp,
     const btCollisionObjectWrapper* colObj0Wrap,int partId0,int index0,
-    const btCollisionObjectWrapper* colObj1Wrap,int partId1,int index1) {
+    const btCollisionObjectWrapper* colObj1Wrap,int partId1,int index1) {      
       float retval = CollisionCollector::addSingleResult(cp, colObj0Wrap,partId0,index0, colObj1Wrap,partId1,index1); // call base class func
       if (retval == 1) { // if contact was added
         bool castShapeIsFirst =  (colObj0Wrap->getCollisionObject() == m_cow);
-        btVector3 normalWorldFromCast = -(castShapeIsFirst ? 1 : -1) * cp.m_normalWorldOnB;          
+        btVector3 normalWorldFromCast = -(castShapeIsFirst ? 1 : -1) * cp.m_normalWorldOnB;
         const CastHullShape* shape = dynamic_cast<const CastHullShape*>((castShapeIsFirst ? colObj0Wrap : colObj1Wrap)->getCollisionObject()->getCollisionShape());
         assert(!!shape);
         btTransform tfWorld0 = m_cow->getWorldTransform();
         btTransform tfWorld1 = m_cow->getWorldTransform() * shape->m_t01;
         btVector3 normalLocal0 = normalWorldFromCast * tfWorld0.getBasis();
         btVector3 normalLocal1 = normalWorldFromCast * tfWorld1.getBasis();
-        btVector3 ptWorld0 = tfWorld0*shape->localGetSupportingVertex(normalLocal0);
-        btVector3 ptWorld1 = tfWorld1*shape->localGetSupportingVertex(normalLocal1);
+
+        Collision& col = m_collisions.back();
+        const float SUPPORT_FUNC_TOLERANCE = .01 METERS;
+
+//        cout << normalWorldFromCast << endl;
+
+        if (castShapeIsFirst) {
+          swap(col.ptA, col.ptB);
+          swap(col.linkA, col.linkB);
+          col.normalB2A *= -1;
+        }
+
+#if 0
+        btVector3 ptWorld0 = tfWorld0*shape->m_shape->localGetSupportingVertex(normalLocal0);
+        btVector3 ptWorld1 = tfWorld1*shape->m_shape->localGetSupportingVertex(normalLocal1);
+#else
+        btVector3 ptLocal0;
+        float localsup0;
+        GetAverageSupport(shape->m_shape, normalLocal0, localsup0, ptLocal0);
+        btVector3 ptWorld0 = tfWorld0 * ptLocal0;
+        btVector3 ptLocal1;
+        float localsup1;
+        GetAverageSupport(shape->m_shape, normalLocal1, localsup1, ptLocal1);
+        btVector3 ptWorld1 = tfWorld1 * ptLocal1;
+
+
+
+#endif
         float sup0 = normalWorldFromCast.dot(ptWorld0);
         float sup1 = normalWorldFromCast.dot(ptWorld1);
-        const float SUPPORT_FUNC_TOLERANCE = 1e-5;
-        LOG_DEBUG("sup0: %.2f. sup1: %.2f", sup0, sup1);
+
+
+
+        // TODO: this section is potentially problematic. think hard about the math
         if (sup0 - sup1 > SUPPORT_FUNC_TOLERANCE) {
-          m_collisions.back().time = 0;
+          col.time = 0;
+          col.cctype = CCType_Time0;
         }
         else if (sup1 - sup0 > SUPPORT_FUNC_TOLERANCE) {
-          m_collisions.back().time = 1;
+          col.time = 1;
+          col.cctype = CCType_Time1;
         }
         else {
           const btVector3& ptOnCast = castShapeIsFirst ? cp.m_positionWorldOnA : cp.m_positionWorldOnB;
           float l0c = (ptOnCast - ptWorld0).length(), 
-                l1c = (ptOnCast - ptWorld1).length(), 
-                l01 = (ptWorld1 - ptWorld0).length();
-          const float COLLINEARITY_TOLERANCE = 1e-5;
-          // cout << ptWorld0 << " / " << ptWorld1 << " / " << ptOnCast << endl;
-          // if ( l0c + l1c - l01 > COLLINEARITY_TOLERANCE ) LOG_DEBUG("points aren't collinear?!");
-          m_collisions.back().time = l01 > 0  ?  fmin(l0c/l01, 1) : .5;            
+                l1c = (ptOnCast - ptWorld1).length();
+
+          col.ptB = toOR(ptWorld0);
+          col.ptB1 = toOR(ptWorld1);
+          col.cctype = CCType_Between;
+
+          const float LENGTH_TOLERANCE = .001 METERS;
+
+          if ( l0c + l1c < LENGTH_TOLERANCE) {
+
+            col.time = .5;
+          }
+          else {
+            col.time = l0c/(l0c + l1c); 
+          }
+
         }
           
       }
@@ -868,7 +981,7 @@ void BulletCollisionChecker::CheckShapeCast(btCollisionShape* shape, const btTra
     obj->m_index = cow->m_index;
     CastCollisionCollector cc(collisions, obj, this);
     cc.m_collisionFilterMask = KinBodyFilter;
-    cc.m_collisionFilterGroup = RobotFilter;
+    // cc.m_collisionFilterGroup = cow->m_collisionFilterGroup;
     world->contactTest(obj, cc);
     delete obj;
     delete shape;
@@ -884,9 +997,9 @@ void BulletCollisionChecker::CheckShapeCast(btCollisionShape* shape, const btTra
 
 }
 
-void BulletCollisionChecker::CastVsAll(RobotAndDOF& rad, const vector<KinBody::LinkPtr>& links,
+void BulletCollisionChecker::CastVsAll(Configuration& rad, const vector<KinBody::LinkPtr>& links,
     const DblVec& startjoints, const DblVec& endjoints, vector<Collision>& collisions) {
-  OR::RobotBase::RobotStateSaver saver = rad.Save();
+  Configuration::SaverPtr saver = rad.Save();
   rad.SetDOFValues(startjoints);
   int nlinks = links.size();
   vector<btTransform> tbefore(nlinks), tafter(nlinks);
@@ -906,7 +1019,7 @@ void BulletCollisionChecker::CastVsAll(RobotAndDOF& rad, const vector<KinBody::L
     CollisionObjectWrapper* cow = m_link2cow[links[i].get()];
     CheckShapeCast(cow->getCollisionShape(), tbefore[i], tafter[i], cow, m_world, collisions);
   }
-  LOG_DEBUG("CastVsAll checked %i links and found %i collisions", links.size(), collisions.size());
+  LOG_DEBUG("CastVsAll checked %li links and found %li collisions", links.size(), collisions.size());
 }
 
 }

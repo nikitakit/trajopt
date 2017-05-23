@@ -49,8 +49,11 @@ all: sphinx doxygen
 doxygen:
 	doxygen Doxyfile
 
+shell:
+	sh generate_shell_output.sh
+
 upload:
-	rsync -azvu --delete  ./ pabbeel@rll.berkeley.edu:/var/www/trajopt/doc/
+	rsync -azvu --delete --progress  ./ pabbeel@rll.berkeley.edu:/var/www/trajopt/doc/
 
 rsspaper: $(RSSPAPERLOCAL)
 

@@ -97,6 +97,8 @@ public:
   virtual double value(const vector<double>&) = 0;
   /** Convexify at solution vector x*/
   virtual ConvexObjectivePtr convex(const vector<double>& x, Model* model) = 0;
+  /** Get problem variables associated with this cost */
+  virtual VarVector getVars() {return VarVector();}
 
   string name() {return name_;}
   void setName(const string& name) {name_=name;}
@@ -123,6 +125,8 @@ public:
   vector<double> violations(const vector<double>& x);
   /** Sum of violations */
   double violation(const vector<double>& x);
+  /** Get problem variables associated with this constraint */
+  virtual VarVector getVars() {return VarVector();}
 
   string name() {return name_;}
   void setName(const string& name) {name_=name;}
@@ -151,29 +155,30 @@ class OptProb {
 public:
   OptProb();
   /** create variables with bounds [-INFINITY, INFINITY]  */
-  void createVariables(const vector<string>& names);
+  VarVector createVariables(const vector<string>& names);
   /** create variables with bounds [lb[i], ub[i] */
-  void createVariables(const vector<string>& names, const vector<double>& lb, const vector<double>& ub);
+  VarVector createVariables(const vector<string>& names, const vector<double>& lb, const vector<double>& ub);
   /** set the lower bounds of all the variables */
   void setLowerBounds(const vector<double>& lb);
   /** set the upper bounds of all the variables */
   void setUpperBounds(const vector<double>& ub);
+  /** set lower bounds of some of the variables */
+  void setLowerBounds(const vector<double>& lb, const vector<Var>& vars);
+  /** set upper bounds of some of the variables */
+  void setUpperBounds(const vector<double>& ub, const vector<Var>& vars);
   /** Note: in the current implementation, this function just adds the constraint to the
    * model. So if you're not careful, you might end up with an infeasible problem. */
-  void addLinearConstr(const AffExpr&, ConstraintType type);
+  void addLinearConstraint(const AffExpr&, ConstraintType type);
   /** Add nonlinear cost function */
   void addCost(CostPtr);
   /** Add nonlinear constraint function */
-  void addConstr(ConstraintPtr);
-  void addEqConstr(ConstraintPtr);
-  void addIneqConstr(ConstraintPtr);
+  void addConstraint(ConstraintPtr);
+  void addEqConstraint(ConstraintPtr);
+  void addIneqConstraint(ConstraintPtr);
   virtual ~OptProb() {}
   /** Find closest point to solution vector x that satisfies linear inequality constraints */
   vector<double> getCentralFeasiblePoint(const vector<double>& x);
   vector<double> getClosestFeasiblePoint(const vector<double>& x);
-  /** Some variables are actually increments, meaning that the trust region should be around zero */
-  vector<bool> getIncrementMask() {return incmask_;}
-  void setIncrementMask(const vector<bool>& incmask) {incmask_ = incmask;}
 
   vector<ConstraintPtr> getConstraints() const;
   vector<CostPtr>& getCosts() {return costs_;}
@@ -195,9 +200,23 @@ protected:
   vector<CostPtr> costs_;
   vector<ConstraintPtr> eqcnts_;
   vector<ConstraintPtr> ineqcnts_;
-  vector<bool> incmask_;
 
   OptProb(OptProb&);
 };
+
+template <typename VecType>
+inline void setVec(DblVec& x, const VarVector& vars, const VecType& vals) {
+  assert(vars.size() == vals.size());
+  for (int i = 0; i < vars.size(); ++i) {
+    x[vars[i].var_rep->index] = vals[i];
+  }
+}
+template <typename OutVecType>
+inline OutVecType getVec1(const vector<double>& x, const VarVector& vars) {
+  OutVecType out(vars.size());
+  for (unsigned i=0; i < vars.size(); ++i) out[i] = x[vars[i].var_rep->index];
+  return out;
+}
+
 
 }

@@ -19,6 +19,11 @@ trajoptpy.SetInteractive(args.interactive) # pause every iteration, until you pr
 
 robot = env.GetRobots()[0]
 manip = robot.GetManipulator("rightarm")
+robot.SetActiveManipulator(manip)
+ikmodel = openravepy.databases.inversekinematics.InverseKinematicsModel(
+    robot, iktype=openravepy.IkParameterization.Type.Transform6D)
+if not ikmodel.load():
+    ikmodel.autogenerate()
 
 xyz_target = [.6,-.6,1]
 
@@ -67,7 +72,7 @@ request = {
     "type" : "cart_vel",
     "name" : "cart_vel",
     "params" : {
-        "distance_limit" : .05,
+        "max_displacement" : .05,
         "first_step" : 0,
         "last_step" : n_steps-1, #inclusive
         "link" : "r_gripper_tool_frame"
@@ -117,4 +122,4 @@ else: #use constraint
 # END add_constraints
 
 result = trajoptpy.OptimizeProblem(prob) # do optimization
-print result
+assert [viol <= 1e-4 for (_name,viol) in result.GetConstraints()]

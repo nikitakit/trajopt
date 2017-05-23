@@ -106,7 +106,7 @@ void printCostInfo(const vector<double>& old_cost_vals, const vector<double>& mo
     for (size_t i=0; i < old_cnt_vals.size(); ++i) {
       double approx_improve = old_cnt_vals[i] - model_cnt_vals[i];
       double exact_improve = old_cnt_vals[i] - new_cnt_vals[i];
-      if (fabs(approx_improve > 1e-8)) 
+      if (fabs(approx_improve) > 1e-8)
         printf("%15s | %10.3e | %10.3e | %10.3e | %10.3e\n", cnt_names[i].c_str(), merit_coeff*old_cnt_vals[i], merit_coeff*approx_improve, merit_coeff*exact_improve, exact_improve/approx_improve); 
       else 
         printf("%15s | %10.3e | %10.3e | %10.3e | %10s\n", cnt_names[i].c_str(), merit_coeff*old_cnt_vals[i], merit_coeff*approx_improve, merit_coeff*exact_improve, "  ------  "); 
@@ -188,11 +188,9 @@ void BasicTrustRegionSQP::setTrustBoxConstraints(const DblVec& x) {
   assert(vars.size() == x.size());
   DblVec& lb=prob_->getLowerBounds(), ub=prob_->getUpperBounds();
   DblVec lbtrust(x.size()), ubtrust(x.size());
-  vector<bool> incmask = prob_->getIncrementMask();
-  if (incmask.empty()) incmask = vector<bool>(x.size(), false);
   for (size_t i=0; i < x.size(); ++i) {
-    lbtrust[i] = fmax((incmask[i] ? 0 : x[i]) - trust_box_size_, lb[i]);
-    ubtrust[i] = fmin((incmask[i] ? 0 : x[i]) + trust_box_size_, ub[i]);
+    lbtrust[i] = fmax(x[i] - trust_box_size_, lb[i]);
+    ubtrust[i] = fmin(x[i] + trust_box_size_, ub[i]);
   }
   model_->setVarBounds(vars, lbtrust, ubtrust);
 }
@@ -244,12 +242,23 @@ OptStatus BasicTrustRegionSQP::optimize() {
       LOG_INFO("iteration %i", iter);
 
       // speedup: if you just evaluated the cost when doing the line search, use that
-      if (results_.cost_vals.empty()) { //only happens on the first iteration
+      if (results_.cost_vals.empty() && results_.cnt_viols.empty()) { //only happens on the first iteration
         results_.cnt_viols = evaluateConstraintViols(constraints, x_);
         results_.cost_vals = evaluateCosts(prob_->getCosts(), x_);
         assert(results_.n_func_evals == 0);
         ++results_.n_func_evals;
       }
+
+      // DblVec new_cnt_viols = evaluateConstraintViols(constraints, x_);
+      // DblVec new_cost_vals = evaluateCosts(prob_->getCosts(), x_);
+      // cout << "costs" << endl;
+      // for (int i=0; i < new_cnt_viols.size(); ++i) {
+      //   cout << cnt_names[i] << " " << new_cnt_viols[i] - results_.cnt_viols[i] << endl;
+      // }
+      // for (int i=0; i < new_cost_vals.size(); ++i) {
+      //   cout << cost_names[i] << " " << new_cost_vals[i] - results_.cost_vals[i] << endl;
+      // }
+
 
       vector<ConvexObjectivePtr> cost_models = convexifyCosts(prob_->getCosts(),x_, model_.get());
       vector<ConvexConstraintsPtr> cnt_models = convexifyConstraints(constraints, x_, model_.get());
@@ -280,8 +289,9 @@ OptStatus BasicTrustRegionSQP::optimize() {
         CvxOptStatus status = model_->optimize();
         ++results_.n_qp_solves;
         if (status != CVX_SOLVED) {
-          LOG_ERROR("convex solver failed! set LOG_DEBUG_LEVEL=DEBUG to see solver output. saving model to /tmp/fail.lp");
+          LOG_ERROR("convex solver failed! set TRAJOPT_LOG_THRESH=DEBUG to see solver output. saving model to /tmp/fail.lp and IIS to /tmp/fail.ilp");
           model_->writeToFile("/tmp/fail.lp");
+          model_->writeToFile("/tmp/fail.ilp");
           retval = OPT_FAILED;
           goto cleanup;
         }
@@ -294,8 +304,11 @@ OptStatus BasicTrustRegionSQP::optimize() {
         DblVec new_x(model_var_vals.begin(), model_var_vals.begin() + x_.size());
 
         if (GetLogLevel() >= util::LevelDebug) {
-          DblVec model_cnt_viols2 = evaluateModelCosts(cnt_cost_models, model_var_vals);
-          LOG_DEBUG("SHOULD BE THE SAME: %.2f*%s ?= %s", merit_error_coeff_, CSTR(model_cnt_viols), CSTR(model_cnt_viols2));
+          DblVec cnt_costs1 = evaluateModelCosts(cnt_cost_models, model_var_vals);
+          DblVec cnt_costs2 = model_cnt_viols;
+          for (int i=0; i < cnt_costs2.size(); ++i) cnt_costs2[i] *= merit_error_coeff_;
+          LOG_DEBUG("SHOULD BE ALMOST THE SAME: %s ?= %s", CSTR(cnt_costs1), CSTR(cnt_costs2) );
+          // not exactly the same because cnt_costs1 is based on aux variables, but they might not be at EXACTLY the right value
         }
 
         DblVec new_cost_vals = evaluateCosts(prob_->getCosts(), new_x);
@@ -310,14 +323,14 @@ OptStatus BasicTrustRegionSQP::optimize() {
         double merit_improve_ratio = exact_merit_improve / approx_merit_improve;
 
         if (util::GetLogLevel() >= util::LevelInfo) {
-          LOG_INFO("");
+          LOG_INFO(" ");
           printCostInfo(results_.cost_vals, model_cost_vals, new_cost_vals,
                         results_.cnt_viols, model_cnt_viols, new_cnt_viols, cost_names,
                         cnt_names, merit_error_coeff_);
           printf("%15s | %10.3e | %10.3e | %10.3e | %10.3e\n", "TOTAL", old_merit, approx_merit_improve, exact_merit_improve, merit_improve_ratio);
         }
 
-        if (approx_merit_improve < -1e-4) {
+        if (approx_merit_improve < -1e-5) {
           LOG_ERROR("approximate merit function got worse (%.3e). (convexification is probably wrong to zeroth order)", approx_merit_improve);
         }
         if (approx_merit_improve < min_approx_improve_) {
@@ -365,7 +378,7 @@ OptStatus BasicTrustRegionSQP::optimize() {
     else {
       LOG_INFO("not all constraints are satisfied. increasing penalties");
       merit_error_coeff_ *= merit_coeff_increase_ratio_;
-      trust_box_size_ = fmax(trust_box_size_, min_trust_box_size_ * 5);
+      trust_box_size_ = fmax(trust_box_size_, min_trust_box_size_ / trust_shrink_ratio_ * 1.5);
     }
 
 

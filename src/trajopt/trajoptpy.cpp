@@ -5,6 +5,7 @@
 #include <boost/foreach.hpp>
 #include "macros.h"
 #include "sco/modeling_utils.hpp"
+#include "numpy_utils.hpp"
 using namespace trajopt;
 using namespace Eigen;
 using namespace OpenRAVE;
@@ -13,43 +14,8 @@ using std::vector;
 namespace py = boost::python;
 
 bool gInteractive = false;
-py::object np_mod;
+py::object openravepy;
 
-py::list toPyList(const IntVec& x) {
-  py::list out;
-  for (int i=0; i < x.size(); ++i) out.append(x[i]);
-  return out;
-}
-
-template<typename T>
-struct type_traits {
-  static const char* npname;
-};
-template<> const char* type_traits<float>::npname = "float32";
-template<> const char* type_traits<int>::npname = "int32";
-template<> const char* type_traits<double>::npname = "float64";
-
-template <typename T>
-T* getPointer(const py::object& arr) {
-  long int i = py::extract<long int>(arr.attr("ctypes").attr("data"));
-  T* p = (T*)i;
-  return p;
-}
-
-template<typename T>
-py::object toNdarray1(const T* data, size_t dim0) {
-  py::object out = np_mod.attr("empty")(py::make_tuple(dim0), type_traits<T>::npname);
-  T* p = getPointer<T>(out);
-  memcpy(p, data, dim0*sizeof(T));
-  return out;
-}
-template<typename T>
-py::object toNdarray2(const T* data, size_t dim0, size_t dim1) {
-  py::object out = np_mod.attr("empty")(py::make_tuple(dim0, dim1), type_traits<T>::npname);
-  float* pout = getPointer<float>(out);
-  memcpy(pout, data, dim0*dim1*sizeof(float));
-  return out;
-}
 
 
 EnvironmentBasePtr GetCppEnv(py::object py_env) {
@@ -69,16 +35,22 @@ KinBody::LinkPtr GetCppLink(py::object py_link, EnvironmentBasePtr env) {
 }
 
 
+
+
 class PyTrajOptProb {
 public:
   TrajOptProbPtr m_prob;
   PyTrajOptProb(TrajOptProbPtr prob) : m_prob(prob) {}
   py::list GetDOFIndices() {
-    vector<int> inds = m_prob->GetRAD()->GetJointIndices();
+    RobotAndDOFPtr rad = boost::dynamic_pointer_cast<RobotAndDOF>(m_prob->GetRAD());
+    if (!rad) PRINT_AND_THROW("can only call GetDOFIndices on a robot");
+    vector<int> inds = rad->GetJointIndices();
     return toPyList(inds);
   }
   void SetRobotActiveDOFs() {
-    m_prob->GetRAD()->SetRobotActiveDOFs();
+    RobotAndDOFPtr rad = boost::dynamic_pointer_cast<RobotAndDOF>(m_prob->GetRAD());
+    if (!rad) PRINT_AND_THROW("can only call SetRobotActiveDOFs on a robot");
+    rad->SetRobotActiveDOFs();
   }
   void AddConstraint1(py::object f, py::list ijs, const string& typestr, const string& name);
   void AddConstraint2(py::object f, py::object dfdx, py::list ijs, const string& typestr, const string& name);
@@ -139,14 +111,14 @@ VarVector _GetVars(py::list ijs, const VarArray& vars) {
 void PyTrajOptProb::AddConstraint1(py::object f, py::list ijs, const string& typestr, const string& name) {  
   ConstraintType type = _GetConstraintType(typestr);
   VarVector vars = _GetVars(ijs, m_prob->GetVars());
-  ConstraintPtr c(new ConstraintFromFunc(VectorOfVectorPtr(new VectorFuncFromPy(f)), vars, type, name));
-  m_prob->addConstr(c);
+  ConstraintPtr c(new ConstraintFromFunc(VectorOfVectorPtr(new VectorFuncFromPy(f)), vars, VectorXd::Ones(0), type, name));
+  m_prob->addConstraint(c);
 }
 void PyTrajOptProb::AddConstraint2(py::object f, py::object dfdx, py::list ijs, const string& typestr, const string& name) {
   ConstraintType type = _GetConstraintType(typestr);
   VarVector vars = _GetVars(ijs, m_prob->GetVars());
-  ConstraintPtr c(new ConstraintFromFunc(VectorOfVectorPtr(new VectorFuncFromPy(f)), MatrixOfVectorPtr(new MatrixFuncFromPy(dfdx)), vars, type, name));
-  m_prob->addConstr(c);
+  ConstraintPtr c(new ConstraintFromFunc(VectorOfVectorPtr(new VectorFuncFromPy(f)), MatrixOfVectorPtr(new MatrixFuncFromPy(dfdx)), vars, VectorXd::Ones(0), type, name));
+  m_prob->addConstraint(c);
 }
 void PyTrajOptProb::AddCost1(py::object f, py::list ijs, const string& name) {
   VarVector vars = _GetVars(ijs, m_prob->GetVars());
@@ -279,6 +251,10 @@ public:
     EnvironmentBasePtr env = boost::const_pointer_cast<EnvironmentBase>(m_cc->GetEnv());
     m_cc->ExcludeCollisionPair(*GetCppLink(link0, env), *GetCppLink(link1, env));
   }
+  void IncludeCollisionPair(py::object link0, py::object link1) {
+    EnvironmentBasePtr env = boost::const_pointer_cast<EnvironmentBase>(m_cc->GetEnv());
+    m_cc->IncludeCollisionPair(*GetCppLink(link0, env), *GetCppLink(link1, env));
+  }
   PyCollisionChecker(CollisionCheckerPtr cc) : m_cc(cc) {}
 private:
   PyCollisionChecker();
@@ -300,8 +276,17 @@ public:
     m_viewer->Draw();
     return 0;
   }
+  void UpdateSceneData() {
+    m_viewer->UpdateSceneData();
+  }
   PyGraphHandle PlotKinBody(py::object py_kb) {
     return PyGraphHandle(m_viewer->PlotKinBody(GetCppKinBody(py_kb, m_viewer->GetEnv())));
+  }
+  PyGraphHandle PlotLink(py::object py_link) {
+    return PyGraphHandle(m_viewer->PlotLink(GetCppLink(py_link, m_viewer->GetEnv())));
+  }
+  void SetTransparency(py::object py_kb, float alpha) {
+    m_viewer->SetTransparency(GetCppKinBody(py_kb, m_viewer->GetEnv()), alpha);
   }
   void SetAllTransparency(float a) {
     m_viewer->SetAllTransparency(a);
@@ -310,6 +295,11 @@ public:
     assert(!!m_viewer);
     m_viewer->Idle();
   }
+PyGraphHandle DrawText(std::string text, float x, float y, float fontsize, py::object pycolor) {
+    OpenRAVE::Vector color = OpenRAVE::Vector(py::extract<float>(pycolor[0]), py::extract<float>(pycolor[1]), py::extract<float>(pycolor[2]), py::extract<float>(pycolor[3]));
+    return PyGraphHandle(m_viewer->drawtext(text, x, y, fontsize, color));
+  }
+  
 private:
   OSGViewerPtr m_viewer;
   PyOSGViewer() {}
@@ -358,6 +348,7 @@ BOOST_PYTHON_MODULE(ctrajoptpy) {
       .def("BodyVsAll", &PyCollisionChecker::BodyVsAll)
       .def("PlotCollisionGeometry", &PyCollisionChecker::PlotCollisionGeometry)
       .def("ExcludeCollisionPair", &PyCollisionChecker::ExcludeCollisionPair)
+      .def("IncludeCollisionPair", &PyCollisionChecker::IncludeCollisionPair)
       ;
   py::def("GetCollisionChecker", &PyGetCollisionChecker);
   py::class_<PyCollision>("Collision", py::no_init)
@@ -368,10 +359,14 @@ BOOST_PYTHON_MODULE(ctrajoptpy) {
      ;
 
   py::class_< PyOSGViewer >("OSGViewer", py::no_init)
+     .def("UpdateSceneData", &PyOSGViewer::UpdateSceneData)
      .def("Step", &PyOSGViewer::Step)
      .def("PlotKinBody", &PyOSGViewer::PlotKinBody)
+     .def("PlotLink", &PyOSGViewer::PlotLink)
+     .def("SetTransparency", &PyOSGViewer::SetTransparency)
      .def("SetAllTransparency", &PyOSGViewer::SetAllTransparency)
      .def("Idle", &PyOSGViewer::Idle)
+     .def("DrawText", &PyOSGViewer::DrawText)
     ;
   py::def("GetViewer", &PyGetViewer, "Get OSG viewer for environment or create a new one");
 

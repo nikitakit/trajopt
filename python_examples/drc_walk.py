@@ -25,7 +25,7 @@ def request_skeleton(n_steps):
             "params" : {"coeffs": ([.1]*28 + [0]*7), "vals":standing_posture.tolist()}
         },
         {
-            "type":"continuous_collision",
+            "type":"collision",
             "params":{"coeffs":[1], "dist_pen":[.04]}
         }
         ],
@@ -214,7 +214,7 @@ def press_button_request(robot, hand_xyz, hand_link, foot_links, n_steps):
         ])    
         request["constraints"].append(
             {
-                "type":"zmp",name:"zmp_%i"%i,
+                "type":"zmp","name":"zmp_%i"%i,
                 "params":{"planted_links":[from_foot, to_foot],"timestep":i}
             })
     request["constraints"].append(

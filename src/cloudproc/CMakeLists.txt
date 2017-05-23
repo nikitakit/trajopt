@@ -2,18 +2,18 @@
 
 find_package(PCL 1.7 REQUIRED)
 
-include_directories(${PCL_INCLUDE_DIRS})
+include_directories(SYSTEM ${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
-include_directories(${HACD_INCLUDE_DIRS})
+include_directories(SYSTEM ${HACD_INCLUDE_DIRS})
 
 
 if (APPLE)
 	include_directories("/usr/local/Cellar/vtk/5.10.0/include/vtk-5.10")
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden -Wno-deprecated")
 
 
 # add_custom_command(

@@ -13,11 +13,12 @@
     }
   },
   {
-    "type" : "continuous_collision",
+    "type" : "collision",
     "name" : "cc",
     "params" : {
-      "coeffs" : [1],
-      "dist_pen" : [0.01]
+      "continuous":true,
+      "coeffs" : [10],
+      "dist_pen" : [0.2]
     }
   }
   ],

@@ -1,19 +1,25 @@
 include_directories(
+  SYSTEM
   ${BULLET_INCLUDE_DIRS}  
   ${Boost_INCLUDE_DIRS}
   ${Eigen_INCLUDE_DIRS}
   ${OpenRAVE_INCLUDE_DIRS}
   ${JSON_INCLUDE_DIRS}
 )
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations -fvisibility=hidden")
+
+if (NOT APPLE)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
+endif()
 
 add_library(trajopt
-	collision_avoidance.cpp
+	traj_plotter.cpp
+  trajectory_costs.cpp
+	kinematic_terms.cpp 
+	collision_terms.cpp
 	json_marshal.cpp
 	problem_description.cpp
 	bullet_collision_checker.cpp 
-	kinematic_constraints.cpp 
-	robot_and_dof.cpp 
+	configuration_space.cpp 
 	utils.cpp
 	rave_utils.cpp
 	collision_checker.cpp

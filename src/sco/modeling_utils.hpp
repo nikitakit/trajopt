@@ -12,7 +12,6 @@ using numerical derivatives or user-defined analytic derivatives.
  */
 
 
-
 namespace sco {
 
 enum PenaltyType {
@@ -35,6 +34,7 @@ Same idea as above, but different output type
  */
 DblVec getDblVec(const vector<double>& x, const VarVector& vars);
 
+AffExpr affFromValGrad(double y, const VectorXd& x, const VectorXd& dydx, const VarVector& vars);
 
 class CostFromFunc : public Cost {
 public:
@@ -42,6 +42,7 @@ public:
   CostFromFunc(ScalarOfVectorPtr f, const VarVector& vars, const string& name, bool full_hessian=false);
   double value(const vector<double>& x);
   ConvexObjectivePtr convex(const vector<double>& x, Model* model);
+  VarVector getVars() {return vars_;}
 protected:
   ScalarOfVectorPtr f_;
   VarVector vars_;
@@ -52,11 +53,12 @@ protected:
 class CostFromErrFunc : public Cost {
 public:
   /// supply error function, obtain derivative numerically
-  CostFromErrFunc(VectorOfVectorPtr f, const VarVector& vars, const VectorXd& coeffs, PenaltyType pen_type, const string&  name);
+  CostFromErrFunc(VectorOfVectorPtr f, const VarVector& vars, const VectorXd& coeffs, PenaltyType pen_type, const string& name);
   /// supply error function and gradient
-  CostFromErrFunc(VectorOfVectorPtr f, MatrixOfVectorPtr dfdx, const VarVector& vars, const VectorXd& coeffs, PenaltyType pen_type, const string&  name);
+  CostFromErrFunc(VectorOfVectorPtr f, MatrixOfVectorPtr dfdx, const VarVector& vars, const VectorXd& coeffs, PenaltyType pen_type, const string& name);
   double value(const vector<double>& x);
   ConvexObjectivePtr convex(const vector<double>& x, Model* model);
+  VarVector getVars() {return vars_;}
 protected:
   VectorOfVectorPtr f_;
   MatrixOfVectorPtr dfdx_;
@@ -69,18 +71,21 @@ protected:
 class ConstraintFromFunc : public Constraint {
 public:
   /// supply error function, obtain derivative numerically  
-  ConstraintFromFunc(VectorOfVectorPtr f, const VarVector& vars, ConstraintType type, const std::string& name);
+  ConstraintFromFunc(VectorOfVectorPtr f, const VarVector& vars, const VectorXd& coeffs, ConstraintType type, const std::string& name);
   /// supply error function and gradient
-  ConstraintFromFunc(VectorOfVectorPtr f, MatrixOfVectorPtr dfdx, const VarVector& vars, ConstraintType type, const std::string& name);
+  ConstraintFromFunc(VectorOfVectorPtr f, MatrixOfVectorPtr dfdx, const VarVector& vars, const VectorXd& coeffs, ConstraintType type, const std::string& name);
   vector<double> value(const vector<double>& x);
   ConvexConstraintsPtr convex(const vector<double>& x, Model* model);
   ConstraintType type() {return type_;}
+  VarVector getVars() {return vars_;}
 protected:
   VectorOfVectorPtr f_;
   MatrixOfVectorPtr dfdx_;
   VarVector vars_;
+  VectorXd coeffs_;
   ConstraintType type_;
   double epsilon_;
+  VectorXd scaling_;
 };
 
 

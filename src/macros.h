@@ -46,12 +46,12 @@
   ss << s;\
   throw std::runtime_error(ss.str());\
 } while (0)
-#define FAIL_IF_FALSE(expr) if (!expr) {\
+#define FAIL_IF_FALSE(expr) if (!(expr)) {\
     PRINT_AND_THROW( "expected true: " #expr);\
   }
 
 #ifdef __CDT_PARSER__
-#define BOOST_FOREACH(a,b) for(;;)
+#define BOOST_FOREACH(a,b) for(a;;)
 #endif
 
 #define ALWAYS_ASSERT(exp) if (!(exp)) {printf("%s failed in file %s at line %i\n", #exp, __FILE__, __LINE__ ); abort();}

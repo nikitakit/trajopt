@@ -1,6 +1,9 @@
+#pragma once
 #include "trajopt/common.hpp"
 #include "json_marshal.hpp"
 #include <boost/function.hpp>
+#include <boost/shared_ptr.hpp>
+#include "traj_plotter.hpp"
 
 namespace sco{struct OptResults;}
 
@@ -12,20 +15,29 @@ typedef Json::Value TrajOptRequest;
 typedef Json::Value TrajOptResponse;
 using std::string;
 
-class CostInfo;
-typedef boost::shared_ptr<CostInfo> CostInfoPtr;
-class CntInfo;
-typedef boost::shared_ptr<CntInfo> CntInfoPtr;
+struct TermInfo;
+typedef boost::shared_ptr<TermInfo> TermInfoPtr;
 class TrajOptProb;
 typedef boost::shared_ptr<TrajOptProb> TrajOptProbPtr;
-class ProblemConstructionInfo;
-class TrajOptResult;
+struct ProblemConstructionInfo;
+struct TrajOptResult;
 typedef boost::shared_ptr<TrajOptResult> TrajOptResultPtr;
 
 TrajOptProbPtr TRAJOPT_API ConstructProblem(const ProblemConstructionInfo&);
 TrajOptProbPtr TRAJOPT_API ConstructProblem(const Json::Value&, OpenRAVE::EnvironmentBasePtr env);
 TrajOptResultPtr TRAJOPT_API OptimizeProblem(TrajOptProbPtr, bool plot);
 
+enum TermType {
+  TT_COST,
+  TT_CNT
+};
+
+#define DEFINE_CREATE(classname) \
+  static TermInfoPtr create() {\
+    TermInfoPtr out(new classname());\
+    return out;\
+  }
+  
 
 /**
  * Holds all the data for a trajectory optimization problem
@@ -34,29 +46,37 @@ TrajOptResultPtr TRAJOPT_API OptimizeProblem(TrajOptProbPtr, bool plot);
 class TRAJOPT_API TrajOptProb : public OptProb {
 public:
   TrajOptProb();
-  TrajOptProb(int n_steps, RobotAndDOFPtr rad);
+  TrajOptProb(int n_steps, ConfigurationPtr rad);
   ~TrajOptProb() {}
   VarVector GetVarRow(int i) {
     return m_traj_vars.row(i);
+  }
+  Var& GetVar(int i, int j) {
+    return m_traj_vars.at(i,j);
   }
   VarArray& GetVars() {
     return m_traj_vars;
   }
   int GetNumSteps() {return m_traj_vars.rows();}
   int GetNumDOF() {return m_traj_vars.cols();}
-  RobotAndDOFPtr GetRAD() {return m_rad;}
-  OR::EnvironmentBasePtr GetEnv() {return m_rad->GetRobot()->GetEnv();}
+  ConfigurationPtr GetRAD() {return m_rad;}
+  OR::EnvironmentBasePtr GetEnv() {return m_rad->GetEnv();}
 
   void SetInitTraj(const TrajArray& x) {m_init_traj = x;}
   TrajArray GetInitTraj() {return m_init_traj;}
 
+  TrajPlotterPtr GetPlotter() {return m_trajplotter;}
+
   friend TrajOptProbPtr ConstructProblem(const ProblemConstructionInfo&);
+
 private:
   VarArray m_traj_vars;
-  RobotAndDOFPtr m_rad;
+  ConfigurationPtr m_rad;
   TrajArray m_init_traj;
-  typedef std::pair<string,string> StringPair;
+  TrajPlotterPtr m_trajplotter;
 };
+
+void TRAJOPT_API SetupPlotting(TrajOptProb& prob, Optimizer& opt);
 
 struct TRAJOPT_API TrajOptResult {
   vector<string> cost_names, cnt_names;
@@ -87,50 +107,38 @@ struct InitInfo {
   void fromJson(const Json::Value& v);
 };
 
+
+struct TRAJOPT_API MakesCost {
+};
+struct TRAJOPT_API MakesConstraint {
+};
+
 /**
-When cost element of JSON doc is read, one of these guys gets constructed to hold the parameters.
+When cost or constraint element of JSON doc is read, one of these guys gets constructed to hold the parameters.
 Then it later gets converted to a Cost object by the hatch method
 */
-struct TRAJOPT_API CostInfo  {
+struct TRAJOPT_API TermInfo  {
 
-  string name;
+  string name; // xxx is this used?
+  TermType term_type;
   virtual void fromJson(const Json::Value& v)=0;
-
-  static CostInfoPtr fromName(const string& type);
   virtual void hatch(TrajOptProb& prob) = 0;
-  typedef CostInfoPtr (*MakerFunc)();
+  
+
+  static TermInfoPtr fromName(const string& type);
 
   /**
-   * Registers a user-defined CostInfo so you can use your own cost
+   * Registers a user-defined TermInfo so you can use your own cost
    * see function RegisterMakers.cpp
    */
+  typedef TermInfoPtr (*MakerFunc)(void);
   static void RegisterMaker(const std::string& type, MakerFunc);
 
-  virtual ~CostInfo() {}
+  virtual ~TermInfo() {}
 private:
   static std::map<string, MakerFunc> name2maker;
 };
-
-/**
-See CostInfo
-*/
-struct TRAJOPT_API CntInfo  {
-  string name;
-  virtual void fromJson(const Json::Value& v) = 0;
-
-  static CntInfoPtr fromName(const string& type);
-  virtual void hatch(TrajOptProb& prob) = 0;
-  typedef CntInfoPtr (*MakerFunc)();
-
-  static void RegisterMaker(const std::string& type, MakerFunc);
-
-  virtual ~CntInfo() {}
-private:
-  static std::map<string, MakerFunc> name2maker;
-};
-
-void fromJson(const Json::Value& v, CostInfoPtr&);
-void fromJson(const Json::Value& v, CntInfoPtr&);
+// void fromJson(const Json::Value& v, TermInfoPtr&);
 
 /**
 This object holds all the data that's read from the JSON document
@@ -138,8 +146,8 @@ This object holds all the data that's read from the JSON document
 struct TRAJOPT_API ProblemConstructionInfo {
 public:
   BasicInfo basic_info;
-  vector<CostInfoPtr> cost_infos;
-  vector<CntInfoPtr> cnt_infos;
+  vector<TermInfoPtr> cost_infos;
+  vector<TermInfoPtr> cnt_infos;
   InitInfo init_info;
 
   OR::EnvironmentBasePtr env;
@@ -147,24 +155,23 @@ public:
 
   ProblemConstructionInfo(OR::EnvironmentBasePtr _env) : env(_env) {}
   void fromJson(const Value& v);
-
 };
 
 /**
  \brief pose error
 
- See trajopt::PoseCntInfo
+ See trajopt::PoseTermInfo
  */
-struct PoseCostInfo : public CostInfo {
+struct PoseCostInfo : public TermInfo, public MakesCost, public MakesConstraint {
   int timestep;
   Vector3d xyz;
   Vector4d wxyz;
   Vector3d pos_coeffs, rot_coeffs;
-  double coeff;
+  // double coeff;
   KinBody::LinkPtr link;
   void fromJson(const Value& v);
   void hatch(TrajOptProb& prob);
-  static CostInfoPtr create();
+  DEFINE_CREATE(PoseCostInfo);
 };
 
 
@@ -176,48 +183,28 @@ struct PoseCostInfo : public CostInfo {
   \f}
   where \f$i\f$ indexes over dof and \f$c_i\f$ are coeffs
  */
-struct JointPosCostInfo : public CostInfo {
+struct JointPosCostInfo : public TermInfo, public MakesCost {
   DblVec vals, coeffs;
   int timestep;
   void fromJson(const Value& v);
   void hatch(TrajOptProb& prob);
-  static CostInfoPtr create();
+  DEFINE_CREATE(JointPosCostInfo)
 };
 
 
-/**
-  \brief Pose constraint
-
-  let \f$T_{err} = T_{targ}^{-1} * T_{cur}\f$.
-  Let xerr  be the  translation of \f$T_{err}\f$
-  and roterr be the rotation part of the quaternion.
-  Then the error vector is [xerr, roterr], scaled by
-  pos_coeffs and rot_coeffs, respectively
- */
-struct PoseCntInfo : public CntInfo {
-  int timestep;
-  Vector3d xyz;
-  Vector4d wxyz;
-  Vector3d pos_coeffs, rot_coeffs;
-  double coeff;
-  KinBody::LinkPtr link;
-  void fromJson(const Value& v);
-  void hatch(TrajOptProb& prob);
-  static CntInfoPtr create();
-};
 
 /**
  \brief Motion constraint on link
 
- Constrains the change in position of the link in each timestep to be less than distance_limit
+ Constrains the change in position of the link in each timestep to be less than max_displacement
  */
-struct CartVelCntInfo : public CntInfo {
+struct CartVelCntInfo : public TermInfo, public MakesConstraint {
   int first_step, last_step;
   KinBody::LinkPtr link;
-  double distance_limit;
+  double max_displacement;
   void fromJson(const Value& v);
   void hatch(TrajOptProb& prob);
-  static CntInfoPtr create();
+  DEFINE_CREATE(CartVelCntInfo)
 };
 
 /**
@@ -228,12 +215,21 @@ struct CartVelCntInfo : public CntInfo {
 \f}
 where j indexes over DOF, and \f$c_j\f$ are the coeffs.
 */
-struct JointVelCostInfo : public CostInfo {
+struct JointVelCostInfo : public TermInfo, public MakesCost {
   DblVec coeffs;
   void fromJson(const Value& v);
   void hatch(TrajOptProb& prob);
-  static CostInfoPtr create();
+  DEFINE_CREATE(JointVelCostInfo)
 };
+
+struct JointVelConstraintInfo : public TermInfo, public MakesConstraint {
+  DblVec vals;
+  int first_step, last_step;
+  void fromJson(const Value& v);
+  void hatch(TrajOptProb& prob);
+  DEFINE_CREATE(JointVelConstraintInfo)
+};
+
 /**
 \brief %Collision penalty
 
@@ -245,11 +241,7 @@ Distrete-time penalty:
 Continuous-time penalty: same, except you consider swept-out shaps of robot links. Currently self-collisions are not included.
 
 */
-struct CollisionCostInfo : public CostInfo {
-  /*
-   Note: this is an atypical cost, because you can instantiate it with two different cost types: "collision" and "continuous_collision"
-   I should have made "continuous" a parameter, but I'm keeping it this way for backwards compatibility.
-   */
+struct CollisionCostInfo : public TermInfo, public MakesCost {
   /// first_step and last_step are inclusive
   int first_step, last_step;
   /// coeffs.size() = num_timesteps
@@ -257,25 +249,26 @@ struct CollisionCostInfo : public CostInfo {
   /// safety margin: contacts with distance < dist_pen are penalized
   DblVec dist_pen;
   bool continuous;
-  CollisionCostInfo(bool _continuous) : continuous(_continuous) {}
+  /// for continuous-time penalty, use swept-shape between timesteps t and t+gap (gap=1 by default)
+  int gap;
   void fromJson(const Value& v);
   void hatch(TrajOptProb& prob);
-  static CostInfoPtr create_discrete();
-  static CostInfoPtr create_continuous();
+  DEFINE_CREATE(CollisionCostInfo)
 };
 
 
+// TODO: unify with joint position constraint
 /**
 joint-space position constraint
  */
-struct JointConstraintInfo : public CntInfo {
+struct JointConstraintInfo : public TermInfo, public MakesConstraint {
   /// joint values. list of length 1 automatically gets expanded to list of length n_dof
   DblVec vals;
   /// which timestep. default = n_timesteps - 1
   int timestep;
   void fromJson(const Value& v);
   void hatch(TrajOptProb& prob);
-  static CntInfoPtr create();
+  DEFINE_CREATE(JointConstraintInfo)
 };
 
 
